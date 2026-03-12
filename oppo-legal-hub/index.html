@@ -189,7 +189,7 @@ function toOpenAIContent(userContent) {
 }
 async function callClaude(system, userContent) {
     // Calls /.netlify/functions/ai — API key stays on server, no CORS issues
-    const r = await fetch("/.netlify/functions/ai", {
+    const r = await fetch("/api/ai", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ system, content: toOpenAIContent(userContent) })
