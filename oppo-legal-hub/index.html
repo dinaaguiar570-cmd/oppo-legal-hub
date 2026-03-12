@@ -1,0 +1,1303 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OPPO Legal Hub</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; } html, body, #root { height: 100%; } body { font-family: 'Inter', 'Segoe UI', sans-serif; }</style>
+</head>
+<body>
+  <div id="root"></div>
+  <script>/// <reference lib="dom" />
+const { useState, useRef, useMemo, useCallback, useEffect } = React;
+// OPENAI_KEY is stored securely in Netlify environment variables — not exposed here
+// ===================== SUPABASE CONFIG =====================
+// 1. Crie conta em supabase.com
+// 2. Novo projeto > Settings > API > copie URL e anon key abaixo:
+const SUPABASE_URL = "https://psxnezyjhrxjfdrgzkkh.supabase.co";
+const SUPABASE_KEY = "sb_publishable_3MgRWwUhwMh_Phj_EzOmKw_XUEYbhAB";
+// SQL para criar tabelas (cole no SQL Editor do Supabase):
+// create table cases (id bigint primary key, data jsonb, saved_at text, case_number text, counterparty text, court_name text, file_name text);
+// create table tasks (id bigint primary key, title text, status text, due text, case_ref text, notes text);
+// create table emails (id bigint primary key, saved_at text, subject text, category text, priority text, result jsonb);
+// create table inbox (id bigint primary key generated always as identity, from_email text, from_name text, cc text, subject text, body text, body_preview text, received_at text, has_attachments boolean, attachment_names text, action_taken text, ai_result jsonb);
+// Strip HTML from email body — runs in browser, no Power Automate changes needed
+function stripHtml(html) {
+    if (!html)
+        return "";
+    try {
+        const div = document.createElement("div");
+        div.innerHTML = html;
+        // Remove script/style tags completely
+        div.querySelectorAll("script,style,head").forEach(el => el.remove());
+        // Replace <br> and block tags with newlines
+        div.querySelectorAll("br,p,div,li,tr").forEach(el => {
+            el.insertAdjacentText("afterend", "\n");
+        });
+        // Get clean text
+        const text = (div.textContent || div.innerText || "")
+            .replace(/\n{3,}/g, "\n\n") // max 2 consecutive newlines
+            .replace(/[ \t]+/g, " ") // collapse spaces
+            .trim();
+        return text;
+    }
+    catch {
+        // Fallback: regex-based strip
+        return html
+            .replace(/<script[^>]*>.*?<\/script>/gis, "")
+            .replace(/<style[^>]*>.*?<\/style>/gis, "")
+            .replace(/<br\s*\/?>/gi, "\n")
+            .replace(/<\/?(p|div|li|tr)[^>]*>/gi, "\n")
+            .replace(/<[^>]+>/g, "")
+            .replace(/&nbsp;/g, " ")
+            .replace(/&amp;/g, "&")
+            .replace(/&lt;/g, "<")
+            .replace(/&gt;/g, ">")
+            .replace(/&quot;/g, '"')
+            .replace(/\n{3,}/g, "\n\n")
+            .trim();
+    }
+}
+const db = {
+    async get(table) {
+        try {
+            const r = await fetch(`${SUPABASE_URL}/rest/v1/${table}?order=id.desc`, {
+                headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` }
+            });
+            return r.ok ? r.json() : [];
+        }
+        catch {
+            return [];
+        }
+    },
+    async insert(table, row) {
+        try {
+            const r = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
+                method: "POST",
+                headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, "Content-Type": "application/json", Prefer: "return=representation" },
+                body: JSON.stringify(row)
+            });
+            return r.ok ? r.json() : null;
+        }
+        catch {
+            return null;
+        }
+    },
+    async update(table, id, row) {
+        try {
+            const r = await fetch(`${SUPABASE_URL}/rest/v1/${table}?id=eq.${id}`, {
+                method: "PATCH",
+                headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, "Content-Type": "application/json" },
+                body: JSON.stringify(row)
+            });
+            return r.ok;
+        }
+        catch {
+            return false;
+        }
+    },
+    async remove(table, id) {
+        try {
+            const r = await fetch(`${SUPABASE_URL}/rest/v1/${table}?id=eq.${id}`, {
+                method: "DELETE",
+                headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` }
+            });
+            return r.ok;
+        }
+        catch {
+            return false;
+        }
+    }
+};
+const dbReady = () => !SUPABASE_URL.includes("SEU_PROJETO") && !SUPABASE_KEY.includes("SUA_ANON");
+// OPPO Brand Colors
+const BRAND = {
+    black: "#0a0a0a",
+    green: "#3d6b4f",
+    greenLight: "#4e8a65",
+    greenMuted: "#e8f0eb",
+    greenBorder: "#c2d9c9",
+    white: "#ffffff",
+    gray50: "#f7f8f7",
+    gray100: "#eff1f0",
+    gray200: "#dde2de",
+    gray400: "#9aaa9e",
+    gray600: "#5a6b5e",
+    gray800: "#2a3a2d",
+    text: "#111811",
+    textMuted: "#5a6b5e",
+};
+const FIELDS = [
+    { key: "status", label: "Status", fixed: "Ongoing" },
+    { key: "leadCounsel", label: "Lead Counsel", fixed: "Weiss" },
+    { key: "occurrenceTime", label: "Occurrence Time", fixed: null },
+    { key: "caseNumber", label: "Case Number", fixed: null },
+    { key: "courtNumber", label: "Court Number", fixed: null },
+    { key: "courtName", label: "Court Name", fixed: null },
+    { key: "courtDistrict", label: "Court District", fixed: null },
+    { key: "counterparty", label: "Counterparty", fixed: null },
+    { key: "objectOfComplaint", label: "Object of Complaint", fixed: null },
+    { key: "oppoRole", label: "OPPO's Role", fixed: "Defendant" },
+    { key: "oppoEntity", label: "OPPO's Entity", fixed: "" },
+    { key: "modelDevice", label: "Model / Device", fixed: null },
+    { key: "deviceValue", label: "Device Value", fixed: null },
+    { key: "dateOfPurchase", label: "Date of Purchase", fixed: null },
+    { key: "salesChannel", label: "Sales Channel / Store", fixed: null },
+    { key: "amountInvolved", label: "Amount Involved", fixed: null },
+    { key: "provision", label: "Provision", fixed: "" },
+    { key: "lastProvisionDate", label: "Last Provision Date", fixed: "" },
+    { key: "lossEstimate", label: "Loss Estimate", fixed: "" },
+    { key: "customersRequest", label: "Customer's Request", fixed: null },
+    { key: "complaintDescription", label: "Complaint Description", fixed: null },
+    { key: "finalSolution", label: "Final Solution", fixed: "" },
+    { key: "mainDetails", label: "Main Details", fixed: "" },
+];
+const COMPLAINT_OPTIONS = ["Dissatisfaction with SVC Service", "Lack of Parts / Delay in Repair", "Misleading Advertising (Water Resistance)", "Misleading Advertising (Military Resistance)", "Insurance", "Grey Marketing", "Product Liability (Explosion)", "Dissatisfaction", "Defect / Product Flaw", "Out of Warranty (Water)", "Out of Warranty", "Others"];
+const EXTRACT_PROMPT = `You are a legal document data extraction assistant for OPPO Brazil. Extract fields from legal notifications. Return ONLY valid JSON, no markdown.
+Fields: occurrenceTime (today DD/MM/YYYY), caseNumber (Protocolo), courtNumber, courtName (PROCON or JEC), courtDistrict (City/ST of consumer), counterparty (consumer full name), objectOfComplaint (one of the exact options), modelDevice, deviceValue (real value from complaint text), dateOfPurchase (DD/MM/YYYY), salesChannel, amountInvolved, customersRequest (English brief summary), complaintDescription (English 3-4 sentences). Use "" if not found.`;
+const EMAIL_PROMPT = `You are a legal assistant for OPPO Brazil analyzing emails received by Dina Aguiar (intern, Legal/Compliance team). Return ONLY valid JSON with these fields:
+- category: "PROCON Notification" | "JEC - Legal" | "Proposicao/Audiencia" | "Internal" | "Customer Request" | "Other"
+- priority: "High" | "Medium" | "Low"
+- needs_action: true if email mentions Dina by name, contains legal docs (carta de preposicao, ata de audiencia, notificacao), involves a case/protocolo, or requires a response. false if purely informational.
+- action_type: "respond" | "create_task" | "forward" | "archive" | "none"
+- subject_summary: one line in Portuguese summarizing what the email is about
+- key_info: array of up to 5 short Portuguese bullet points with key facts
+- action_required: what Dina must do, in Portuguese. Empty string if none.
+- suggested_task_title: if needs_action is true, a short task title in Portuguese for the Planner (e.g. "Responder PROCON SP - Caso #12345")
+- suggested_deadline: deadline hint if mentioned in email (DD/MM/YYYY format), else ""
+- reply_to: email address to reply to if found, else ""
+- suggested_reply: professional Portuguese reply body if action_type is "respond", else ""`;
+// Convert content array to OpenAI messages format
+function toOpenAIContent(userContent) {
+    const parts = [];
+    for (const item of userContent) {
+        if (item.type === "text") {
+            parts.push({ type: "text", text: item.text });
+        }
+        else if (item.type === "image") {
+            // Images: send as image_url with base64
+            parts.push({ type: "image_url", image_url: { url: `data:${item.source.media_type};base64,${item.source.data}`, detail: "high" } });
+        }
+        else if (item.type === "document") {
+            // PDFs: GPT-4o Vision accepts PDF as image_url with application/pdf mime
+            parts.push({ type: "image_url", image_url: { url: `data:application/pdf;base64,${item.source.data}`, detail: "high" } });
+        }
+    }
+    return parts;
+}
+async function callClaude(system, userContent) {
+    // Calls /.netlify/functions/ai — API key stays on server, no CORS issues
+    const r = await fetch("/.netlify/functions/ai", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ system, content: toOpenAIContent(userContent) })
+    });
+    if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        throw new Error((err === null || err === void 0 ? void 0 : err.error) || `Erro ${r.status} no servidor`);
+    }
+    const j = await r.json();
+    if (j.error)
+        throw new Error(j.error);
+    return j;
+}
+// OPPO Logo SVG
+const OPPOLogo = ({ size = 28, white = false }) => (React.createElement("svg", { width: size * 3.2, height: size * 0.9, viewBox: "0 0 120 34", fill: "none" },
+    React.createElement("text", { x: "0", y: "27", fontFamily: "'Inter','Arial',sans-serif", fontWeight: "800", fontSize: "32", letterSpacing: "-1", fill: white ? "#ffffff" : BRAND.black }, "OPPO")));
+// Styles
+const S = {
+    sidebar: { width: 230, minWidth: 230, background: BRAND.black, display: "flex", flexDirection: "column", height: "100vh", overflowY: "auto" },
+    main: { flex: 1, display: "flex", flexDirection: "column", height: "100vh", overflow: "hidden", background: BRAND.gray50 },
+    topbar: { background: BRAND.white, borderBottom: `1px solid ${BRAND.gray200}`, padding: "0 28px", height: 56, display: "flex", alignItems: "center", gap: 16, flexShrink: 0 },
+    content: { flex: 1, overflowY: "auto", padding: "28px 32px" },
+    card: { background: BRAND.white, borderRadius: 4, border: `1px solid ${BRAND.gray200}`, overflow: "hidden", marginBottom: 16 },
+    ch: { padding: "14px 20px", borderBottom: `1px solid ${BRAND.gray100}`, display: "flex", alignItems: "center", justifyContent: "space-between" },
+    cb: { padding: 20 },
+    inp: { width: "100%", padding: "9px 12px", border: `1px solid ${BRAND.gray200}`, borderRadius: 3, fontSize: 13, fontFamily: "inherit", outline: "none", boxSizing: "border-box", color: BRAND.text, background: BRAND.white },
+};
+const mkBtn = (v = "primary", ex = {}) => ({
+    borderRadius: 3, padding: "9px 18px", cursor: "pointer", fontWeight: 600, fontSize: 13,
+    display: "inline-flex", alignItems: "center", gap: 6, letterSpacing: ".3px", fontFamily: "inherit",
+    background: {
+        primary: BRAND.black, green: BRAND.green, ghost: "transparent",
+        outline: "transparent", gray: BRAND.gray100, white: BRAND.white, red: "#fdecea",
+    }[v] || BRAND.black,
+    color: { primary: BRAND.white, green: BRAND.white, ghost: BRAND.green, outline: BRAND.black, gray: BRAND.gray800, white: BRAND.black, red: "#c0392b" }[v] || BRAND.white,
+    border: v === "outline" ? `1.5px solid ${BRAND.black}` : v === "ghost" ? `1.5px solid ${BRAND.green}` : "none",
+    ...ex
+});
+const mkTag = (bg, color, ex = {}) => ({ display: "inline-flex", alignItems: "center", padding: "3px 9px", borderRadius: 2, fontSize: 11, fontWeight: 600, letterSpacing: ".3px", background: bg, color, ...ex });
+const pColor = p => ({ High: "#c0392b", Medium: "#8a6000", Low: BRAND.green }[p] || BRAND.gray600);
+const pBg = p => ({ High: "#fdecea", Medium: "#fff8e1", Low: BRAND.greenMuted }[p] || BRAND.gray100);
+function Modal({ title, onClose, children, footer, maxWidth = 560, isDraft = false }) {
+    const handleBackdrop = () => {
+        if (isDraft) {
+            if (window.confirm("Você tem um rascunho não enviado. Deseja descartar?"))
+                onClose();
+        }
+        else {
+            onClose();
+        }
+    };
+    return (React.createElement("div", { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 20 }, onClick: handleBackdrop },
+        React.createElement("div", { style: { background: BRAND.white, borderRadius: 4, width: "100%", maxWidth, maxHeight: "90vh", overflowY: "auto", boxShadow: "0 20px 60px rgba(0,0,0,.2)" }, onClick: e => e.stopPropagation() },
+            React.createElement("div", { style: { padding: "18px 24px", borderBottom: `1px solid ${BRAND.gray100}`, display: "flex", justifyContent: "space-between", alignItems: "center" } },
+                React.createElement("span", { style: { fontWeight: 700, fontSize: 15, color: BRAND.text, letterSpacing: "-.2px" } }, title),
+                React.createElement("div", { style: { display: "flex", gap: 6, alignItems: "center" } },
+                    isDraft && (React.createElement("span", { style: { fontSize: 11, color: BRAND.gray400, background: BRAND.gray100, padding: "3px 8px", borderRadius: 10 } }, "\uD83D\uDCDD rascunho")),
+                    React.createElement("button", { style: mkBtn("gray", { padding: "5px 10px", fontSize: 12 }), onClick: handleBackdrop }, "\u2715"))),
+            React.createElement("div", { style: { padding: 24 } }, children),
+            footer && React.createElement("div", { style: { padding: "14px 24px", borderTop: `1px solid ${BRAND.gray100}`, display: "flex", gap: 8, justifyContent: "flex-end" } }, footer))));
+}
+function FormField({ label, children, hint }) {
+    return (React.createElement("div", { style: { marginBottom: 14 } },
+        React.createElement("label", { style: { display: "block", fontSize: 12, fontWeight: 600, color: BRAND.gray600, marginBottom: 5, letterSpacing: ".4px", textTransform: "uppercase" } }, label),
+        children,
+        hint && React.createElement("div", { style: { fontSize: 11, color: BRAND.gray400, marginTop: 4 } }, hint)));
+}
+function SectionTitle({ title, subtitle, action }) {
+    return (React.createElement("div", { style: { marginBottom: 20, display: "flex", justifyContent: "space-between", alignItems: "flex-end" } },
+        React.createElement("div", null,
+            React.createElement("h2", { style: { fontSize: 20, fontWeight: 700, color: BRAND.text, letterSpacing: "-.4px", marginBottom: 3 } }, title),
+            subtitle && React.createElement("p", { style: { color: BRAND.textMuted, fontSize: 13 } }, subtitle)),
+        action));
+}
+// ===================== EXTRACTOR =====================
+function Extractor({ onSave }) {
+    const [mode, setMode] = useState("paste");
+    const [file, setFile] = useState(null);
+    const [preview, setPreview] = useState(null);
+    const [paste, setPaste] = useState("");
+    const [loading, setLoading] = useState(false);
+    const [data, setData] = useState(null);
+    const [error, setError] = useState(null);
+    const [copied, setCopied] = useState(false);
+    const [saved, setSaved] = useState(false);
+    const fileRef = useRef();
+    const handleFile = f => {
+        if (!f)
+            return;
+        setFile(f);
+        setData(null);
+        setError(null);
+        const r = new FileReader();
+        r.onload = e => setPreview({ url: e.target.result, type: f.type });
+        r.onerror = () => setError("Erro ao ler arquivo. Tente novamente.");
+        r.readAsDataURL(f);
+    };
+    const extract = async () => {
+        setLoading(true);
+        setError(null);
+        setData(null);
+        try {
+            let uc;
+            if (mode === "paste") {
+                if (!paste.trim())
+                    throw new Error("Cole o texto da notificação antes de extrair.");
+                uc = [{ type: "text", text: `Extract fields:\n\n${paste}` }];
+            }
+            else {
+                if (!file)
+                    throw new Error("Selecione um arquivo antes de extrair.");
+                // Read file fresh to avoid stale preview state
+                const b64 = await new Promise((res, rej) => {
+                    const fr = new FileReader();
+                    fr.onload = e => res(e.target.result.split(",")[1]);
+                    fr.onerror = () => rej(new Error("Falha ao ler arquivo."));
+                    fr.readAsDataURL(file);
+                });
+                const isPdf = file.type === "application/pdf";
+                const mtype = file.type || "image/jpeg";
+                uc = isPdf
+                    ? [{ type: "document", source: { type: "base64", media_type: "application/pdf", data: b64 } }, { type: "text", text: "Extract all legal notification fields from this document." }]
+                    : [{ type: "image", source: { type: "base64", media_type: mtype, data: b64 } }, { type: "text", text: "Extract all legal notification fields from this image." }];
+            }
+            setData(await callClaude(EXTRACT_PROMPT, uc));
+        }
+        catch (e) {
+            setError(e.message || "Erro ao processar. Verifique sua API key e tente novamente.");
+        }
+        finally {
+            setLoading(false);
+        }
+    };
+    const getV = f => { var _a; if (f.fixed !== null)
+        return f.fixed; return (_a = data === null || data === void 0 ? void 0 : data[f.key]) !== null && _a !== void 0 ? _a : ""; };
+    const upd = (k, v) => setData(p => ({ ...p, [k]: v }));
+    const tsv = () => FIELDS.map(f => getV(f)).join("\t");
+    const doCopy = () => { const t = tsv(), go = () => { setCopied(true); setTimeout(() => setCopied(false), 2500); }; try {
+        navigator.clipboard.writeText(t).then(go).catch(() => fb(t, go));
+    }
+    catch {
+        fb(t, go);
+    } };
+    const fb = (t, cb) => { const ta = document.createElement("textarea"); ta.value = t; ta.style.cssText = "position:fixed;opacity:0"; document.body.appendChild(ta); ta.select(); document.execCommand("copy"); document.body.removeChild(ta); cb(); };
+    const dl = () => { const b = new Blob([FIELDS.map(f => f.label).join("\t") + "\n" + tsv()], { type: "text/tab-separated-values" }); const a = document.createElement("a"); a.href = URL.createObjectURL(b); a.download = `oppo_${(data === null || data === void 0 ? void 0 : data.caseNumber) || "caso"}.tsv`; a.click(); };
+    const save = () => { if (!data)
+        return; onSave({ id: Date.now(), savedAt: new Date().toLocaleString("pt-BR"), fileName: mode === "paste" ? "Portal" : (file === null || file === void 0 ? void 0 : file.name) || "doc", caseNumber: data.caseNumber || "—", counterparty: data.counterparty || "—", courtName: data.courtName || "—", data: { ...data } }); setSaved(true); setTimeout(() => setSaved(false), 2500); };
+    return (React.createElement("div", null,
+        React.createElement(SectionTitle, { title: "Extrator de Notifica\u00E7\u00F5es", subtitle: "Extraia campos de notifica\u00E7\u00F5es do PROCON/JEC para sua planilha" }),
+        React.createElement("div", { style: S.card },
+            React.createElement("div", { style: S.cb },
+                React.createElement("div", { style: { display: "flex", gap: 0, marginBottom: 18, border: `1px solid ${BRAND.gray200}`, borderRadius: 3, overflow: "hidden", width: "fit-content" } }, [{ id: "paste", label: "Colar Texto do Portal" }, { id: "upload", label: "Upload de Documento" }].map(m => (React.createElement("button", { key: m.id, onClick: () => { setMode(m.id); setData(null); setError(null); }, style: { padding: "9px 20px", border: "none", borderRight: `1px solid ${BRAND.gray200}`, background: mode === m.id ? BRAND.black : BRAND.white, color: mode === m.id ? BRAND.white : BRAND.gray600, fontWeight: 600, fontSize: 13, cursor: "pointer", fontFamily: "inherit", letterSpacing: ".2px" } }, m.label)))),
+                mode === "paste" && React.createElement(React.Fragment, null,
+                    React.createElement("div", { style: { fontSize: 12, color: BRAND.textMuted, marginBottom: 8 } },
+                        "Abra a reclama\u00E7\u00E3o em ",
+                        React.createElement("strong", { style: { color: BRAND.text } }, "fornecedor2.procon.sp.gov.br"),
+                        ", selecione tudo (Ctrl+A), copie e cole abaixo:"),
+                    React.createElement("textarea", { value: paste, onChange: e => setPaste(e.target.value), placeholder: "Cole o texto aqui...", rows: 7, style: { ...S.inp, resize: "vertical" } })),
+                mode === "upload" && React.createElement(React.Fragment, null,
+                    React.createElement("div", { onDrop: e => { e.preventDefault(); handleFile(e.dataTransfer.files[0]); }, onDragOver: e => e.preventDefault(), onClick: () => fileRef.current.click(), style: { border: `2px dashed ${BRAND.gray200}`, borderRadius: 3, padding: "28px", textAlign: "center", cursor: "pointer", background: BRAND.gray50 }, onMouseEnter: e => e.currentTarget.style.borderColor = BRAND.green, onMouseLeave: e => e.currentTarget.style.borderColor = BRAND.gray200 },
+                        React.createElement("input", { ref: fileRef, type: "file", accept: "image/*,application/pdf", style: { display: "none" }, onChange: e => handleFile(e.target.files[0]) }),
+                        file ? React.createElement("div", null,
+                            React.createElement("strong", { style: { color: BRAND.text } }, file.name),
+                            React.createElement("div", { style: { color: BRAND.gray400, fontSize: 12, marginTop: 4 } },
+                                (file.size / 1024).toFixed(1),
+                                " KB"))
+                            : React.createElement("div", { style: { color: BRAND.gray600 } },
+                                "Arraste ou clique para enviar",
+                                React.createElement("div", { style: { fontSize: 12, marginTop: 4, color: BRAND.gray400 } }, "JPG, PNG ou PDF"))),
+                    preview && preview.type !== "application/pdf" && React.createElement("div", { style: { textAlign: "center", marginTop: 10 } },
+                        React.createElement("img", { src: preview.url, alt: "", style: { maxHeight: 100, borderRadius: 3, border: `1px solid ${BRAND.gray200}` } }))),
+                React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 14 } },
+                    React.createElement("button", { style: { ...mkBtn("primary"), minWidth: 160, opacity: (!paste && !file) || loading ? .5 : 1 }, onClick: extract, disabled: (!paste && !file) || loading }, loading ? "Analisando..." : "Extrair Informações"),
+                    (paste || file) && React.createElement("button", { style: mkBtn("gray"), onClick: () => { setPaste(""); setFile(null); setPreview(null); setData(null); setError(null); } }, "Limpar")))),
+        error && React.createElement("div", { style: { background: "#fff0f0", border: "1px solid #fcc", borderRadius: 3, padding: "12px 16px", color: "#c0392b", marginBottom: 16, fontSize: 13 } }, error),
+        data && (React.createElement("div", { style: S.card },
+            React.createElement("div", { style: S.ch },
+                React.createElement("span", { style: { fontWeight: 700, color: BRAND.text, fontSize: 14 } }, "Campos Extra\u00EDdos"),
+                React.createElement("div", { style: { display: "flex", gap: 8 } },
+                    React.createElement("button", { style: mkBtn("outline"), onClick: save }, saved ? "Salvo!" : "Salvar"),
+                    React.createElement("button", { style: mkBtn("primary"), onClick: doCopy }, copied ? "Copiado!" : "Copiar"),
+                    React.createElement("button", { style: mkBtn("green"), onClick: dl }, "Baixar .TSV"))),
+            FIELDS.map((field, i) => {
+                const val = getV(field);
+                return (React.createElement("div", { key: field.key, style: { display: "grid", gridTemplateColumns: "200px 1fr", borderBottom: i < FIELDS.length - 1 ? `1px solid ${BRAND.gray100}` : "none" } },
+                    React.createElement("div", { style: { padding: "8px 16px", fontSize: 12, fontWeight: 600, color: BRAND.gray600, background: BRAND.gray50, display: "flex", alignItems: "center", letterSpacing: ".2px" } }, field.label),
+                    React.createElement("div", { style: { padding: "4px 12px", display: "flex", alignItems: "center" } }, field.fixed === "" ? React.createElement("span", { style: { color: BRAND.gray400, fontSize: 12, fontStyle: "italic" } }, "autom\u00E1tico")
+                        : field.fixed !== null ? React.createElement("span", { style: { fontSize: 13, background: BRAND.gray100, padding: "3px 9px", borderRadius: 2, color: BRAND.gray600 } }, val)
+                            : field.key === "objectOfComplaint"
+                                ? React.createElement("select", { value: val, onChange: e => upd(field.key, e.target.value), style: { ...S.inp, padding: "5px 8px" } },
+                                    React.createElement("option", { value: "" }, "\u2014 selecione \u2014"),
+                                    COMPLAINT_OPTIONS.map(o => React.createElement("option", { key: o }, o)))
+                                : React.createElement("textarea", { value: val, onChange: e => upd(field.key, e.target.value), rows: val && val.length > 80 ? 3 : 1, style: { ...S.inp, resize: "vertical" } }))));
+            }),
+            React.createElement("div", { style: { padding: "10px 16px", background: BRAND.gray50, borderTop: `1px solid ${BRAND.gray100}` } },
+                React.createElement("div", { style: { fontSize: 11, color: BRAND.gray400, marginBottom: 5 } }, "Selecione tudo (Ctrl+A) e copie (Ctrl+C) para colar na planilha:"),
+                React.createElement("textarea", { readOnly: true, value: tsv(), onFocus: e => e.target.select(), rows: 2, style: { width: "100%", padding: "6px", border: `1px solid ${BRAND.gray200}`, borderRadius: 2, fontSize: 11, fontFamily: "monospace", background: BRAND.white } }))))));
+}
+// ===================== EMAILS HUB =====================
+function EmailsHub({ onAddToPlanner, savedEmails = [], onSaveEmail, openInboxId, onClearOpenInbox }) {
+    var _a, _b, _c, _d, _e;
+    const [subTab, setSubTab] = useState("auto");
+    const [emailText, setEmailText] = useState("");
+    const [loading, setLoading] = useState(false);
+    const [result, setResult] = useState(null);
+    const [error, setError] = useState(null);
+    const [emailHistory, setEmailHistory] = useState([]);
+    const [autoEmails, setAutoEmails] = useState([]);
+    const [drafts, setDrafts] = useState([]);
+    const [autoEmailDetail, setAutoEmailDetail] = useState(null);
+    const [autoLoading, setAutoLoading] = useState(false);
+    const [autoLoading2, setAutoLoading2] = useState(false);
+    const [autoError, setAutoError] = useState("");
+    const loadAutoEmails = useCallback(async () => {
+        if (!dbReady()) {
+            setAutoError("Supabase não configurado.");
+            return;
+        }
+        setAutoLoading2(true);
+        setAutoError("");
+        try {
+            const rows = await db.get("inbox");
+            if (Array.isArray(rows)) {
+                setAutoEmails(rows.sort((a, b) => b.id - a.id));
+                // Auto-classify any unclassified emails
+                rows.filter(r => !r.ai_result && r.body).forEach(async (em) => {
+                    try {
+                        const res = await callClaude(EMAIL_PROMPT, [{ type: "text", text: `De: ${em.from_email}\nAssunto: ${em.subject}\n\n${stripHtml(em.body)}` }]);
+                        await db.update("inbox", em.id, { ai_result: res });
+                        setAutoEmails(p => p.map(e => e.id === em.id ? { ...e, ai_result: res } : e));
+                    }
+                    catch { }
+                });
+            }
+            else {
+                setAutoError("Erro ao carregar e-mails.");
+            }
+        }
+        catch (e) {
+            setAutoError(e.message || "Erro ao conectar com Supabase.");
+        }
+        finally {
+            setAutoLoading2(false);
+        }
+    }, []);
+    // Auto-open email when navigated from Planner
+    useEffect(() => {
+        if (openInboxId && autoEmails.length > 0) {
+            const em = autoEmails.find(e => e.id === openInboxId);
+            if (em) {
+                setAutoEmailDetail(em);
+                setSubTab("auto");
+                onClearOpenInbox && onClearOpenInbox();
+            }
+        }
+    }, [openInboxId, autoEmails]);
+    // Load on mount + poll every 30s
+    useEffect(() => {
+        loadAutoEmails();
+        const interval = setInterval(loadAutoEmails, 30000);
+        return () => clearInterval(interval);
+    }, [loadAutoEmails]);
+    // Sync with savedEmails from Supabase when loaded
+    useEffect(() => {
+        if (savedEmails && savedEmails.length > 0)
+            setEmailHistory(savedEmails);
+    }, [savedEmails]);
+    const [selectedEmail, setSelectedEmail] = useState(null);
+    const [showSend, setShowSend] = useState(false);
+    const [sendData, setSendData] = useState({ templateId: "", contactId: "", to: "", cc: "", bcc: "", replyTo: "", subject: "", body: "", mode: "new", forwardNote: "" });
+    const [sending, setSending] = useState(false);
+    const [sendMsg, setSendMsg] = useState("");
+    const [paWebhook, setPaWebhook] = useState("");
+    const [groups, setGroups] = useState([
+        { id: 1, name: "Time Jurídico", contactIds: [2, 3] },
+        { id: 2, name: "Órgãos Externos", contactIds: [1] },
+    ]);
+    const [templates, setTemplates] = useState([
+        { id: 1, name: "Acuse de Recebimento", subject: "Re: {{assunto}} - Recebimento Confirmado", body: "Prezado(a),\n\nConfirmamos o recebimento da sua solicitação referente a {{assunto}}.\n\nNosso time jurídico retornará em até 5 dias úteis.\n\nAtenciosamente,\nEquipe Jurídica OPPO Brasil", toContactIds: [], ccContactIds: [], bccContactIds: [], replyToContactId: "", groupIds: [] },
+        { id: 2, name: "Solicitar Documentos", subject: "Re: {{assunto}} - Documentos Necessários", body: "Prezado(a),\n\nPara darmos continuidade, precisamos dos seguintes documentos:\n\n• Nota fiscal do produto\n• Ordem de Serviço da assistência técnica\n• Documento de identidade\n\nAtenciosamente,\nEquipe Jurídica OPPO Brasil", toContactIds: [], ccContactIds: [], bccContactIds: [], replyToContactId: "", groupIds: [] },
+        { id: 3, name: "Encaminhar Interno", subject: "FWD: {{assunto}}", body: "Equipe,\n\nEncaminho o caso para análise e providências.\n\nFavor retornar em até 2 dias úteis.\n\nAtt,\nJurídico OPPO Brasil", toContactIds: [3], ccContactIds: [2], bccContactIds: [], replyToContactId: "", groupIds: [1] },
+    ]);
+    const [showTplModal, setShowTplModal] = useState(false);
+    const [editTpl, setEditTpl] = useState(null);
+    const [tplForm, setTplForm] = useState({ name: "", subject: "", body: "", toContactIds: [], ccContactIds: [], bccContactIds: [], replyToContactId: "", groupIds: [] });
+    const [contacts, setContacts] = useState([
+        { id: 1, name: "PROCON SP", email: "atendimento@procon.sp.gov.br", org: "Órgão Público", type: "Órgão" },
+        { id: 2, name: "Weiss Advogados", email: "contato@weiss.adv.br", org: "Weiss & Associados", type: "Jurídico" },
+        { id: 3, name: "Jurídico Interno", email: "juridico@oppo.com", org: "OPPO Brasil", type: "Interno" },
+    ]);
+    const [showContactModal, setShowContactModal] = useState(false);
+    const [editContact, setEditContact] = useState(null);
+    const [cForm, setCForm] = useState({ name: "", email: "", org: "", type: "", groupIds: [] });
+    const [showGroupModal, setShowGroupModal] = useState(false);
+    const [editGroup, setEditGroup] = useState(null);
+    const [gForm, setGForm] = useState({ name: "", contactIds: [] });
+    const resolveEmails = (cIds = [], gIds = []) => {
+        const a = cIds.map(id => { var _a; return (_a = contacts.find(c => c.id === Number(id))) === null || _a === void 0 ? void 0 : _a.email; }).filter(Boolean);
+        const b = gIds.flatMap(gid => { const g = groups.find(x => x.id === Number(gid)); return ((g === null || g === void 0 ? void 0 : g.contactIds) || []).map(id => { var _a; return (_a = contacts.find(c => c.id === id)) === null || _a === void 0 ? void 0 : _a.email; }).filter(Boolean); });
+        return [...new Set([...a, ...b])].join(", ");
+    };
+    const analyze = async () => {
+        setLoading(true);
+        setError(null);
+        setResult(null);
+        try {
+            setResult(await callClaude(EMAIL_PROMPT, [{ type: "text", text: emailText }]));
+        }
+        catch (e) {
+            setError(e.message || "Erro ao analisar. Verifique sua API key e tente novamente.");
+        }
+        finally {
+            setLoading(false);
+        }
+    };
+    const saveEmail = () => {
+        if (!result)
+            return;
+        const em = { id: Date.now(), savedAt: new Date().toLocaleString("pt-BR"), subject: result.subject_summary || "—", category: result.category, priority: result.priority, result: { ...result } };
+        setEmailHistory(p => [em, ...p]);
+        if (onSaveEmail)
+            onSaveEmail(em);
+        setResult(null);
+        setEmailText("");
+    };
+    const openSend = (prefill = {}) => { setSendData({ templateId: "", contactId: "", to: prefill.to || "", cc: "", bcc: "", replyTo: "", subject: prefill.subject || "", body: prefill.body || "", mode: prefill.mode || "new", forwardNote: "" }); setShowSend(true); setSendMsg(""); };
+    const applyTemplate = tid => {
+        const tpl = templates.find(t => t.id === Number(tid));
+        if (!tpl)
+            return;
+        setSendData(p => { var _a; return ({ ...p, templateId: tid, subject: tpl.subject, body: tpl.body, to: resolveEmails(tpl.toContactIds, tpl.groupIds), cc: resolveEmails(tpl.ccContactIds), bcc: resolveEmails(tpl.bccContactIds), replyTo: tpl.replyToContactId ? ((_a = contacts.find(c => c.id === Number(tpl.replyToContactId))) === null || _a === void 0 ? void 0 : _a.email) || "" : "" }); });
+    };
+    const applyContact = cid => { const ct = contacts.find(c => c.id === Number(cid)); if (ct)
+        setSendData(p => ({ ...p, contactId: cid, to: ct.email })); };
+    const doSendMailto = () => {
+        const params = new URLSearchParams();
+        if (sendData.cc)
+            params.set("cc", sendData.cc);
+        if (sendData.bcc)
+            params.set("bcc", sendData.bcc);
+        if (sendData.replyTo)
+            params.set("reply-to", sendData.replyTo);
+        params.set("subject", sendData.subject);
+        const body = sendData.mode === "forward" ? `${sendData.forwardNote || ""}\n\n--- Mensagem Original ---\n${sendData.body}` : sendData.body;
+        params.set("body", body);
+        window.open(`mailto:${sendData.to}?${params.toString()}`);
+        setSendMsg("Outlook aberto!");
+    };
+    const doSendPA = async () => {
+        if (!paWebhook) {
+            setSendMsg("Insira o Webhook URL do Power Automate.");
+            return;
+        }
+        setSending(true);
+        try {
+            await fetch(paWebhook, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ to: sendData.to, cc: sendData.cc, bcc: sendData.bcc, replyTo: sendData.replyTo, subject: sendData.subject, body: sendData.mode === "forward" ? `${sendData.forwardNote}\n\n--- Mensagem Original ---\n${sendData.body}` : sendData.body }) });
+            setSendMsg("Enviado via Power Automate!");
+        }
+        catch {
+            setSendMsg("Erro ao enviar.");
+        }
+        finally {
+            setSending(false);
+        }
+    };
+    const cIcon = cat => ({ "PROCON Notification": "⚖", "Legal - General": "Jur", "Customer Request": "Cli", "Internal": "Int" }[cat] || "—");
+    const SUB_TABS = ["auto", "drafts", "sent", "templates", "groups", "contacts"];
+    const SUB_LABELS = { auto: "📥 Recebidos", drafts: "📝 Rascunhos", sent: "📤 Enviados", templates: "📋 Modelos", groups: "👥 Grupos", contacts: "📇 Contatos" };
+    return (React.createElement("div", null,
+        React.createElement(SectionTitle, { title: "E-mails" }),
+        React.createElement("div", { style: { display: "flex", borderBottom: `2px solid ${BRAND.gray200}`, marginBottom: 24, gap: 0 } }, SUB_TABS.map(t => (React.createElement("button", { key: t, onClick: () => setSubTab(t), style: { padding: "10px 20px", border: "none", borderBottom: subTab === t ? `2px solid ${BRAND.black}` : "2px solid transparent", marginBottom: -2, background: "transparent", color: subTab === t ? BRAND.text : BRAND.gray400, fontWeight: subTab === t ? 700 : 500, fontSize: 13, cursor: "pointer", fontFamily: "inherit", letterSpacing: ".2px" } }, SUB_LABELS[t])))),
+        subTab === "inbox" && (React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24, alignItems: "start" } },
+            React.createElement("div", null,
+                React.createElement("div", { style: S.card },
+                    React.createElement("div", { style: S.ch },
+                        React.createElement("span", { style: { fontWeight: 700, color: BRAND.text } }, "Novo E-mail"),
+                        React.createElement("button", { style: mkBtn("outline", { fontSize: 12, padding: "6px 14px" }), onClick: () => openSend() }, "Enviar E-mail")),
+                    React.createElement("div", { style: S.cb },
+                        React.createElement("textarea", { value: emailText, onChange: e => setEmailText(e.target.value), placeholder: "Cole o conte\u00FAdo do e-mail aqui...", rows: 9, style: { ...S.inp, resize: "vertical", marginBottom: 12 } }),
+                        React.createElement("div", { style: { display: "flex", gap: 8 } },
+                            React.createElement("button", { style: { ...mkBtn("primary"), flex: 1, opacity: emailText.trim().length < 10 || loading ? .5 : 1 }, onClick: analyze, disabled: emailText.trim().length < 10 || loading }, loading ? "Analisando..." : "Analisar"),
+                            emailText && React.createElement("button", { style: mkBtn("gray"), onClick: () => { setEmailText(""); setResult(null); } }, "Limpar")))),
+                error && React.createElement("div", { style: { background: "#fff0f0", border: "1px solid #fcc", borderRadius: 3, padding: "12px", color: "#c0392b", marginBottom: 16, fontSize: 13 } }, error),
+                result && (React.createElement("div", { style: S.card },
+                    React.createElement("div", { style: S.ch },
+                        React.createElement("span", { style: { fontWeight: 700, color: BRAND.text } }, "Resultado"),
+                        React.createElement("div", { style: { display: "flex", gap: 6 } },
+                            React.createElement("button", { style: mkBtn("ghost", { fontSize: 12, padding: "5px 12px" }), onClick: () => onAddToPlanner({ title: result.subject_summary, notes: result.action_required, priority: result.priority }) }, "+ Planner"),
+                            React.createElement("button", { style: mkBtn("outline", { fontSize: 12, padding: "5px 12px" }), onClick: saveEmail }, "Salvar"),
+                            React.createElement("button", { style: mkBtn("primary", { fontSize: 12, padding: "5px 12px" }), onClick: () => openSend({ subject: result.subject_summary, body: result.suggested_reply || "" }) }, "Responder"))),
+                    React.createElement("div", { style: S.cb },
+                        React.createElement("div", { style: { display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap" } },
+                            React.createElement("span", { style: mkTag(BRAND.gray100, BRAND.gray600) }, result.category),
+                            React.createElement("span", { style: mkTag(pBg(result.priority), pColor(result.priority)) }, result.priority)),
+                        React.createElement("div", { style: { marginBottom: 12 } },
+                            React.createElement("div", { style: { fontSize: 11, fontWeight: 700, color: BRAND.gray400, marginBottom: 5, textTransform: "uppercase", letterSpacing: ".5px" } }, "Resumo"),
+                            React.createElement("div", { style: { background: BRAND.gray50, padding: "10px 14px", borderRadius: 3, fontSize: 13, color: BRAND.text, borderLeft: `3px solid ${BRAND.green}` } }, result.subject_summary)),
+                        ((_a = result.key_info) === null || _a === void 0 ? void 0 : _a.length) > 0 && React.createElement("div", { style: { marginBottom: 12 } },
+                            React.createElement("div", { style: { fontSize: 11, fontWeight: 700, color: BRAND.gray400, marginBottom: 8, textTransform: "uppercase", letterSpacing: ".5px" } }, "Pontos Principais"),
+                            result.key_info.map((k, i) => React.createElement("div", { key: i, style: { display: "flex", gap: 10, marginBottom: 6 } },
+                                React.createElement("span", { style: { background: BRAND.black, color: BRAND.white, borderRadius: "50%", width: 18, height: 18, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 700, flexShrink: 0 } }, i + 1),
+                                React.createElement("span", { style: { fontSize: 13, color: BRAND.text } }, k)))),
+                        React.createElement("div", { style: { marginBottom: 12 } },
+                            React.createElement("div", { style: { fontSize: 11, fontWeight: 700, color: BRAND.gray400, marginBottom: 5, textTransform: "uppercase", letterSpacing: ".5px" } }, "A\u00E7\u00E3o Necess\u00E1ria"),
+                            React.createElement("div", { style: { background: "#fffbeb", border: `1px solid #fde68a`, padding: "10px 14px", borderRadius: 3, fontSize: 13 } }, result.action_required)),
+                        result.suggested_reply && React.createElement("div", null,
+                            React.createElement("div", { style: { fontSize: 11, fontWeight: 700, color: BRAND.gray400, marginBottom: 5, textTransform: "uppercase", letterSpacing: ".5px" } }, "Resposta Sugerida"),
+                            React.createElement("textarea", { readOnly: true, value: result.suggested_reply, rows: 5, onFocus: e => e.target.select(), style: { ...S.inp, background: BRAND.gray50, resize: "vertical" } })))))),
+            React.createElement("div", null,
+                React.createElement("div", { style: { fontWeight: 700, fontSize: 14, color: BRAND.text, marginBottom: 12 } },
+                    "Salvos (",
+                    emailHistory.length,
+                    ")"),
+                emailHistory.length === 0
+                    ? React.createElement("div", { style: { ...S.card } },
+                        React.createElement("div", { style: { ...S.cb, textAlign: "center", padding: "36px", color: BRAND.gray400, fontSize: 13 } }, "Nenhum e-mail salvo"))
+                    : emailHistory.map(r => (React.createElement("div", { key: r.id, style: { ...S.card, cursor: "pointer", marginBottom: 8 }, onClick: () => setSelectedEmail(r), onMouseEnter: e => e.currentTarget.style.borderColor = BRAND.green, onMouseLeave: e => e.currentTarget.style.borderColor = BRAND.gray200 },
+                        React.createElement("div", { style: { padding: "12px 16px", display: "flex", justifyContent: "space-between", alignItems: "flex-start" } },
+                            React.createElement("div", { style: { flex: 1 } },
+                                React.createElement("div", { style: { fontWeight: 600, fontSize: 13, color: BRAND.text, marginBottom: 4 } }, r.subject),
+                                React.createElement("div", { style: { display: "flex", gap: 6 } },
+                                    React.createElement("span", { style: mkTag(BRAND.gray100, BRAND.gray600, { fontSize: 11 }) }, r.category),
+                                    React.createElement("span", { style: mkTag(pBg(r.priority), pColor(r.priority), { fontSize: 11 }) }, r.priority)),
+                                React.createElement("div", { style: { fontSize: 11, color: BRAND.gray400, marginTop: 4 } }, r.savedAt)),
+                            React.createElement("span", { style: { color: BRAND.green, fontSize: 16 } }, "\u203A")))))))),
+        subTab === "sent" && (React.createElement("div", null,
+            React.createElement("div", { style: { display: "flex", justifyContent: "flex-end", marginBottom: 12 } },
+                React.createElement("button", { style: mkBtn("primary"), onClick: () => openSend() }, "Novo E-mail")),
+            React.createElement("div", { style: S.card },
+                React.createElement("div", { style: { ...S.cb, textAlign: "center", padding: "48px", color: BRAND.gray400, fontSize: 13 } }, "Os e-mails enviados aparecer\u00E3o aqui")))),
+        subTab === "auto" && (React.createElement("div", null,
+            React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 } },
+                React.createElement("div", null,
+                    React.createElement("div", { style: { fontWeight: 700, fontSize: 15, color: BRAND.text } }, "E-mails Recebidos Automaticamente"),
+                    React.createElement("div", { style: { fontSize: 12, color: BRAND.gray400, marginTop: 2 } }, "Capturados pelo Power Automate \u2014 clique para analisar e decidir a\u00E7\u00E3o")),
+                React.createElement("button", { style: { ...mkBtn("outline", { fontSize: 12 }), opacity: autoLoading2 ? 0.6 : 1 }, onClick: loadAutoEmails, disabled: autoLoading2 }, autoLoading2 ? "⏳ Carregando..." : "↺ Atualizar")),
+            autoError && React.createElement("div", { style: { background: '#fef2f2', border: '1px solid #fca5a5', borderRadius: 4, padding: '10px 14px', marginBottom: 12, fontSize: 13, color: '#991b1b' } },
+                "\u274C ",
+                autoError),
+            autoEmails.length === 0 && !autoLoading2 ? (React.createElement("div", { style: S.card },
+                React.createElement("div", { style: { ...S.cb, textAlign: "center", padding: "48px", color: BRAND.gray400 } },
+                    React.createElement("div", { style: { fontSize: 32, marginBottom: 12 } }, "\uD83D\uDCED"),
+                    React.createElement("div", { style: { fontWeight: 600, color: BRAND.gray600, fontSize: 15, marginBottom: 6 } }, "Nenhum e-mail recebido ainda"),
+                    React.createElement("div", { style: { fontSize: 13 } }, "Configure o Power Automate para enviar e-mails aqui automaticamente")))) : autoEmails.map(em => {
+                var _a, _b, _c;
+                return (React.createElement("div", { key: em.id, style: { ...S.card, marginBottom: 10, cursor: "pointer" }, onClick: () => { setAutoEmailDetail(em); setAutoLoading(false); }, onMouseEnter: e => e.currentTarget.style.borderColor = BRAND.green, onMouseLeave: e => e.currentTarget.style.borderColor = BRAND.gray200 },
+                    React.createElement("div", { style: { padding: "14px 18px", display: "flex", gap: 14, alignItems: "flex-start" } },
+                        React.createElement("div", { style: { width: 40, height: 40, borderRadius: "50%", background: em.action_taken ? BRAND.greenMuted : "#fef3c7", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, flexShrink: 0 } }, em.action_taken ? "✅" : "📩"),
+                        React.createElement("div", { style: { flex: 1 } },
+                            React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 4 } },
+                                React.createElement("span", { style: { fontWeight: 700, fontSize: 14, color: BRAND.text } }, em.subject || "(sem assunto)"),
+                                ((_a = em.ai_result) === null || _a === void 0 ? void 0 : _a.needs_action) && !em.action_taken && React.createElement("span", { style: { fontSize: 11, fontWeight: 700, background: "#fef2f2", color: "#dc2626", padding: "2px 8px", borderRadius: 10, flexShrink: 0 } }, "\u26A1 Requer A\u00E7\u00E3o"),
+                                em.ai_result && !em.ai_result.needs_action && !em.action_taken && React.createElement("span", { style: { fontSize: 11, background: BRAND.gray100, color: BRAND.gray400, padding: "2px 8px", borderRadius: 10, flexShrink: 0 } }, "Informativo"),
+                                !em.ai_result && React.createElement("span", { style: { fontSize: 11, background: "#fffbeb", color: "#92400e", padding: "2px 8px", borderRadius: 10, flexShrink: 0 } }, "\uD83D\uDD04 Classificando...")),
+                            React.createElement("div", { style: { fontSize: 12, color: BRAND.green, marginBottom: 2 } },
+                                "De: ",
+                                em.from_name ? `${em.from_name} <${em.from_email}>` : em.from_email),
+                            em.cc && React.createElement("div", { style: { fontSize: 11, color: BRAND.gray400, marginBottom: 4 } },
+                                "CC: ",
+                                em.cc),
+                            ((_b = em.ai_result) === null || _b === void 0 ? void 0 : _b.subject_summary) && React.createElement("div", { style: { fontSize: 12, color: BRAND.gray600, marginBottom: 2 } }, em.ai_result.subject_summary),
+                            ((_c = em.ai_result) === null || _c === void 0 ? void 0 : _c.action_required) && !em.action_taken && React.createElement("div", { style: { fontSize: 12, color: "#92400e", background: "#fffbeb", padding: "3px 8px", borderRadius: 4, display: "inline-block" } },
+                                "\uD83D\uDCCC ",
+                                em.ai_result.action_required)),
+                        React.createElement("div", { style: { textAlign: "right", flexShrink: 0 } },
+                            React.createElement("div", { style: { fontSize: 11, color: BRAND.gray400 } }, em.received_at),
+                            em.has_attachments && React.createElement("div", { style: { fontSize: 11, color: BRAND.gray600, marginTop: 4 } }, "\uD83D\uDCCE Anexo"),
+                            em.action_taken && React.createElement("div", { style: { marginTop: 6 } },
+                                React.createElement("span", { style: mkTag(BRAND.greenMuted, BRAND.green, { fontSize: 11 }) }, em.action_taken))))));
+            }))),
+        subTab === "drafts" && (React.createElement("div", null,
+            React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 } },
+                React.createElement("div", null,
+                    React.createElement("div", { style: { fontWeight: 700, fontSize: 15, color: BRAND.text } }, "Rascunhos"),
+                    React.createElement("div", { style: { fontSize: 12, color: BRAND.gray400, marginTop: 2 } }, "E-mails salvos mas n\u00E3o enviados"))),
+            drafts.length === 0
+                ? React.createElement("div", { style: S.card },
+                    React.createElement("div", { style: { ...S.cb, textAlign: "center", padding: "48px", color: BRAND.gray400 } },
+                        React.createElement("div", { style: { fontSize: 32, marginBottom: 12 } }, "\u2709\uFE0F"),
+                        React.createElement("div", { style: { fontWeight: 600, color: BRAND.gray600, fontSize: 15, marginBottom: 6 } }, "Nenhum rascunho salvo"),
+                        React.createElement("div", { style: { fontSize: 13 } }, "Clique em \"Salvar Rascunho\" ao fechar um e-mail em andamento")))
+                : drafts.map(d => (React.createElement("div", { key: d.id, style: { ...S.card, marginBottom: 10, cursor: "pointer" }, onClick: () => { setSendData(d); setShowSend(true); setSendMsg(""); }, onMouseEnter: e => e.currentTarget.style.borderColor = BRAND.green, onMouseLeave: e => e.currentTarget.style.borderColor = BRAND.gray200 },
+                    React.createElement("div", { style: { padding: "14px 18px", display: "flex", alignItems: "center", gap: 14 } },
+                        React.createElement("div", { style: { fontSize: 24 } }, "\uD83D\uDCDD"),
+                        React.createElement("div", { style: { flex: 1 } },
+                            React.createElement("div", { style: { fontWeight: 700, fontSize: 14, color: BRAND.text } }, d.subject || "(sem assunto)"),
+                            React.createElement("div", { style: { fontSize: 12, color: BRAND.green, marginTop: 2 } },
+                                "Para: ",
+                                d.to || "—"),
+                            React.createElement("div", { style: { fontSize: 11, color: BRAND.gray400, marginTop: 2 } },
+                                "Salvo em: ",
+                                d.savedAt)),
+                        React.createElement("button", { style: mkBtn("gray", { padding: "5px 10px", fontSize: 12 }), onClick: e => { e.stopPropagation(); setDrafts(p => p.filter(x => x.id !== d.id)); } }, "\uD83D\uDDD1 Excluir"))))))),
+        subTab === "templates" && (React.createElement("div", null,
+            React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 } },
+                React.createElement("div", { style: { fontWeight: 700, fontSize: 15, color: BRAND.text } },
+                    "Modelos (",
+                    templates.length,
+                    ")"),
+                React.createElement("button", { style: mkBtn("primary"), onClick: () => { setEditTpl(null); setTplForm({ name: "", subject: "", body: "", toContactIds: [], ccContactIds: [], bccContactIds: [], replyToContactId: "", groupIds: [] }); setShowTplModal(true); } }, "+ Novo Modelo")),
+            templates.map(t => {
+                var _a, _b;
+                const toE = resolveEmails(t.toContactIds, t.groupIds), ccE = resolveEmails(t.ccContactIds), bccE = resolveEmails(t.bccContactIds);
+                const replyE = t.replyToContactId ? (_a = contacts.find(c => c.id === Number(t.replyToContactId))) === null || _a === void 0 ? void 0 : _a.email : "";
+                return (React.createElement("div", { key: t.id, style: { ...S.card, marginBottom: 10 } },
+                    React.createElement("div", { style: { padding: "14px 18px", display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 } },
+                        React.createElement("div", { style: { flex: 1 } },
+                            React.createElement("div", { style: { fontWeight: 700, fontSize: 14, color: BRAND.text, marginBottom: 3 } }, t.name),
+                            React.createElement("div", { style: { fontSize: 12, color: BRAND.textMuted, marginBottom: 8 } }, t.subject),
+                            React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 5 } },
+                                toE && React.createElement("span", { style: mkTag(BRAND.greenMuted, BRAND.green) },
+                                    "Para: ",
+                                    toE),
+                                ccE && React.createElement("span", { style: mkTag("#e3f2fd", "#1565c0") },
+                                    "CC: ",
+                                    ccE),
+                                bccE && React.createElement("span", { style: mkTag("#f3e5f5", "#6a1b9a") },
+                                    "BCC: ",
+                                    bccE),
+                                replyE && React.createElement("span", { style: mkTag("#fffbeb", "#8a6000") },
+                                    "Reply-To: ",
+                                    replyE), (_b = t.groupIds) === null || _b === void 0 ? void 0 :
+                                _b.map(gid => { const g = groups.find(x => x.id === gid); return g ? React.createElement("span", { key: gid, style: mkTag("#fce4ec", "#c62828") },
+                                    "Grupo: ",
+                                    g.name) : null; }))),
+                        React.createElement("div", { style: { display: "flex", gap: 6, flexShrink: 0 } },
+                            React.createElement("button", { style: mkBtn("primary", { fontSize: 12, padding: "6px 14px" }), onClick: () => openSend({ subject: t.subject, body: t.body }) }, "Usar"),
+                            React.createElement("button", { style: mkBtn("outline", { fontSize: 12, padding: "6px 12px" }), onClick: () => { setEditTpl(t); setTplForm({ name: t.name, subject: t.subject, body: t.body, toContactIds: t.toContactIds || [], ccContactIds: t.ccContactIds || [], bccContactIds: t.bccContactIds || [], replyToContactId: t.replyToContactId || "", groupIds: t.groupIds || [] }); setShowTplModal(true); } }, "Editar"),
+                            React.createElement("button", { style: mkBtn("gray", { fontSize: 12, padding: "6px 10px", color: "#c0392b" }), onClick: () => setTemplates(p => p.filter(x => x.id !== t.id)) }, "\u2715"))),
+                    React.createElement("div", { style: { padding: "0 18px 14px" } },
+                        React.createElement("pre", { style: { fontSize: 12, color: BRAND.textMuted, whiteSpace: "pre-wrap", fontFamily: "inherit", background: BRAND.gray50, padding: "10px 14px", borderRadius: 3, maxHeight: 68, overflow: "hidden", borderLeft: `3px solid ${BRAND.gray200}` } }, t.body))));
+            }))),
+        subTab === "groups" && (React.createElement("div", null,
+            React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 } },
+                React.createElement("div", { style: { fontWeight: 700, fontSize: 15, color: BRAND.text } },
+                    "Grupos (",
+                    groups.length,
+                    ")"),
+                React.createElement("button", { style: mkBtn("primary"), onClick: () => { setEditGroup(null); setGForm({ name: "", contactIds: [] }); setShowGroupModal(true); } }, "+ Novo Grupo")),
+            groups.map(g => {
+                const members = g.contactIds.map(id => contacts.find(c => c.id === id)).filter(Boolean);
+                return (React.createElement("div", { key: g.id, style: { ...S.card, marginBottom: 10 } },
+                    React.createElement("div", { style: { padding: "14px 18px", display: "flex", justifyContent: "space-between", alignItems: "center" } },
+                        React.createElement("div", null,
+                            React.createElement("div", { style: { fontWeight: 700, fontSize: 14, color: BRAND.text, marginBottom: 6 } }, g.name),
+                            React.createElement("div", { style: { display: "flex", gap: 6, flexWrap: "wrap" } }, members.length === 0 ? React.createElement("span", { style: { fontSize: 12, color: BRAND.gray400 } }, "Nenhum contato")
+                                : members.map(m => React.createElement("span", { key: m.id, style: mkTag(BRAND.gray100, BRAND.gray600) },
+                                    m.name,
+                                    " \u2014 ",
+                                    m.email)))),
+                        React.createElement("div", { style: { display: "flex", gap: 6 } },
+                            React.createElement("button", { style: mkBtn("outline", { fontSize: 12, padding: "6px 12px" }), onClick: () => { setEditGroup(g); setGForm({ name: g.name, contactIds: [...g.contactIds] }); setShowGroupModal(true); } }, "Editar"),
+                            React.createElement("button", { style: mkBtn("gray", { fontSize: 12, padding: "6px 10px", color: "#c0392b" }), onClick: () => setGroups(p => p.filter(x => x.id !== g.id)) }, "\u2715")))));
+            }))),
+        subTab === "contacts" && (React.createElement("div", null,
+            React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 } },
+                React.createElement("div", { style: { fontWeight: 700, fontSize: 15, color: BRAND.text } },
+                    "Contatos (",
+                    contacts.length,
+                    ")"),
+                React.createElement("button", { style: mkBtn("primary"), onClick: () => { setEditContact(null); setCForm({ name: "", email: "", org: "", type: "", groupIds: [] }); setShowContactModal(true); } }, "+ Novo Contato")),
+            React.createElement("div", { style: S.card }, contacts.map((ct, i) => {
+                const memberOf = groups.filter(g => g.contactIds.includes(ct.id));
+                return (React.createElement("div", { key: ct.id, style: { padding: "14px 18px", borderBottom: i < contacts.length - 1 ? `1px solid ${BRAND.gray100}` : "none", display: "flex", alignItems: "center", gap: 14 } },
+                    React.createElement("div", { style: { width: 36, height: 36, background: BRAND.green, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, color: BRAND.white, fontSize: 14, flexShrink: 0 } }, ct.name[0]),
+                    React.createElement("div", { style: { flex: 1 } },
+                        React.createElement("div", { style: { fontWeight: 700, fontSize: 14, color: BRAND.text } }, ct.name),
+                        React.createElement("div", { style: { fontSize: 12, color: BRAND.green, marginTop: 1 } }, ct.email),
+                        React.createElement("div", { style: { fontSize: 12, color: BRAND.gray400 } }, ct.org),
+                        memberOf.length > 0 && React.createElement("div", { style: { display: "flex", gap: 5, marginTop: 5, flexWrap: "wrap" } }, memberOf.map(g => React.createElement("span", { key: g.id, style: mkTag("#fce4ec", "#c62828", { fontSize: 11 }) },
+                            "Grupo: ",
+                            g.name)))),
+                    React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
+                        React.createElement("span", { style: mkTag(BRAND.gray100, BRAND.gray600) }, ct.type),
+                        React.createElement("button", { style: mkBtn("outline", { fontSize: 12, padding: "5px 12px" }), onClick: () => { setEditContact(ct); setCForm({ name: ct.name, email: ct.email, org: ct.org, type: ct.type, groupIds: groups.filter(g => g.contactIds.includes(ct.id)).map(g => g.id) }); setShowContactModal(true); } }, "Editar"),
+                        React.createElement("button", { style: mkBtn("gray", { fontSize: 12, padding: "5px 10px", color: "#c0392b" }), onClick: () => setContacts(p => p.filter(x => x.id !== ct.id)) }, "\u2715"))));
+            })))),
+        autoEmailDetail && (React.createElement(Modal, { title: autoEmailDetail.subject || "(sem assunto)", onClose: () => { setAutoEmailDetail(null); setAutoLoading(false); }, maxWidth: 700, isDraft: !autoEmailDetail.action_taken, footer: autoEmailDetail.action_taken ? (React.createElement(React.Fragment, null,
+                React.createElement("span", { style: { fontSize: 13, color: BRAND.green, flex: 1 } },
+                    "\u2705 A\u00E7\u00E3o registrada: ",
+                    autoEmailDetail.action_taken),
+                React.createElement("button", { style: mkBtn("gray"), onClick: () => setAutoEmailDetail(null) }, "Fechar"))) : (React.createElement(React.Fragment, null,
+                React.createElement("button", { style: mkBtn("gray"), onClick: () => {
+                        const updated = { ...autoEmailDetail, action_taken: "Arquivado" };
+                        setAutoEmails(p => p.map(e => e.id === autoEmailDetail.id ? updated : e));
+                        if (dbReady())
+                            db.update("inbox", autoEmailDetail.id, { action_taken: "Arquivado" });
+                        setAutoEmailDetail(null);
+                    } }, "\uD83D\uDCC1 Arquivar"),
+                React.createElement("button", { style: mkBtn("green"), onClick: () => {
+                        var _a;
+                        const ai = autoEmailDetail.ai_result;
+                        const newTask = {
+                            id: Date.now(),
+                            title: (ai === null || ai === void 0 ? void 0 : ai.suggested_task_title) || `Verificar: ${(_a = autoEmailDetail.subject) === null || _a === void 0 ? void 0 : _a.substring(0, 50)}`,
+                            status: "pending",
+                            due: (ai === null || ai === void 0 ? void 0 : ai.suggested_deadline) || "",
+                            case: "",
+                            notes: `E-mail de: ${autoEmailDetail.from_email}\nAssunto: ${autoEmailDetail.subject}\n\n${(ai === null || ai === void 0 ? void 0 : ai.action_required) || ""}`,
+                            inboxId: autoEmailDetail.id
+                        };
+                        onAddToPlanner(newTask);
+                        const updated = { ...autoEmailDetail, action_taken: "Tarefa Criada" };
+                        setAutoEmails(p => p.map(e => e.id === autoEmailDetail.id ? updated : e));
+                        if (dbReady())
+                            db.update("inbox", autoEmailDetail.id, { action_taken: "Tarefa Criada" });
+                        setAutoEmailDetail(null);
+                    } }, "\uD83D\uDCCC Criar Tarefa"),
+                React.createElement("button", { style: mkBtn("outline"), onClick: () => {
+                        const tpl = templates[0];
+                        openSend({ to: autoEmailDetail.from_email, subject: `Re: ${autoEmailDetail.subject}`, body: (tpl === null || tpl === void 0 ? void 0 : tpl.body) || "", mode: "new" });
+                        const updated = { ...autoEmailDetail, action_taken: "Resposta Padrão Enviada" };
+                        setAutoEmails(p => p.map(e => e.id === autoEmailDetail.id ? updated : e));
+                        if (dbReady())
+                            db.update("inbox", autoEmailDetail.id, { action_taken: "Resposta Padrão Enviada" });
+                        setAutoEmailDetail(null);
+                    } }, "\uD83D\uDCE7 Responder Padr\u00E3o"),
+                React.createElement("button", { style: mkBtn("ghost"), onClick: () => {
+                        openSend({ to: "", subject: `Enc: ${autoEmailDetail.subject}`, body: autoEmailDetail.body || "", mode: "forward" });
+                        const updated = { ...autoEmailDetail, action_taken: "Encaminhado" };
+                        setAutoEmails(p => p.map(e => e.id === autoEmailDetail.id ? updated : e));
+                        if (dbReady())
+                            db.update("inbox", autoEmailDetail.id, { action_taken: "Encaminhado" });
+                        setAutoEmailDetail(null);
+                    } }, "\u21AA Encaminhar"),
+                React.createElement("button", { style: mkBtn("primary"), onClick: () => {
+                        openSend({ to: autoEmailDetail.from_email, subject: `Re: ${autoEmailDetail.subject}`, body: "", mode: "new" });
+                        const updated = { ...autoEmailDetail, action_taken: "Resposta Personalizada" };
+                        setAutoEmails(p => p.map(e => e.id === autoEmailDetail.id ? updated : e));
+                        if (dbReady())
+                            db.update("inbox", autoEmailDetail.id, { action_taken: "Resposta Personalizada" });
+                        setAutoEmailDetail(null);
+                    } }, "\u270F\uFE0F Responder"))) },
+            React.createElement("div", { style: { background: BRAND.gray50, borderRadius: 6, padding: "12px 16px", marginBottom: 16, border: `1px solid ${BRAND.gray200}` } },
+                React.createElement("div", { style: { display: "grid", gridTemplateColumns: "80px 1fr", gap: "6px 12px", fontSize: 13 } },
+                    React.createElement("span", { style: { fontWeight: 700, color: BRAND.gray600 } }, "De:"),
+                    React.createElement("span", { style: { color: BRAND.green } }, autoEmailDetail.from_name ? `${autoEmailDetail.from_name} <${autoEmailDetail.from_email}>` : autoEmailDetail.from_email),
+                    autoEmailDetail.cc && React.createElement(React.Fragment, null,
+                        React.createElement("span", { style: { fontWeight: 700, color: BRAND.gray600 } }, "CC:"),
+                        React.createElement("span", { style: { color: BRAND.textMuted } }, autoEmailDetail.cc)),
+                    React.createElement("span", { style: { fontWeight: 700, color: BRAND.gray600 } }, "Data:"),
+                    React.createElement("span", { style: { color: BRAND.textMuted } }, autoEmailDetail.received_at),
+                    autoEmailDetail.has_attachments && React.createElement(React.Fragment, null,
+                        React.createElement("span", { style: { fontWeight: 700, color: BRAND.gray600 } }, "Anexos:"),
+                        React.createElement("span", { style: { color: BRAND.gray600 } },
+                            "\uD83D\uDCCE ",
+                            autoEmailDetail.attachment_names || "Sim")))),
+            !autoEmailDetail.ai_result && (React.createElement("div", { style: { marginBottom: 16, textAlign: "center" } },
+                React.createElement("button", { style: { ...mkBtn("green"), width: "100%" }, onClick: async () => {
+                        setAutoLoading(true);
+                        try {
+                            const res = await callClaude(EMAIL_PROMPT, [{ type: "text", text: `De: ${autoEmailDetail.from_email}
+Assunto: ${autoEmailDetail.subject}
+
+${autoEmailDetail.body}` }]);
+                            const updated = { ...autoEmailDetail, ai_result: res };
+                            setAutoEmailDetail(updated);
+                            setAutoEmails(p => p.map(e => e.id === autoEmailDetail.id ? updated : e));
+                            if (dbReady())
+                                db.update("inbox", autoEmailDetail.id, { ai_result: res });
+                        }
+                        catch { }
+                        finally {
+                            setAutoLoading(false);
+                        }
+                    }, disabled: autoLoading }, autoLoading ? "Analisando com IA..." : "🤖 Analisar com IA"))),
+            autoEmailDetail.ai_result && (React.createElement("div", { style: { marginBottom: 16 } },
+                React.createElement("div", { style: { display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" } },
+                    React.createElement("span", { style: mkTag(BRAND.gray100, BRAND.gray600) }, autoEmailDetail.ai_result.category),
+                    React.createElement("span", { style: mkTag(pBg(autoEmailDetail.ai_result.priority), pColor(autoEmailDetail.ai_result.priority)) }, autoEmailDetail.ai_result.priority)),
+                React.createElement("div", { style: { background: BRAND.gray50, padding: "10px 14px", borderRadius: 4, fontSize: 13, borderLeft: `3px solid ${BRAND.green}`, marginBottom: 10 } }, autoEmailDetail.ai_result.subject_summary),
+                React.createElement("div", { style: { background: "#fffbeb", border: "1px solid #fde68a", padding: "10px 14px", borderRadius: 4, fontSize: 13 } },
+                    "\u26A1 ",
+                    autoEmailDetail.ai_result.action_required))),
+            React.createElement("div", { style: { fontWeight: 700, fontSize: 12, color: BRAND.gray400, textTransform: "uppercase", letterSpacing: ".5px", marginBottom: 8 } }, "Corpo do E-mail"),
+            React.createElement("div", { style: { background: BRAND.white, border: `1px solid ${BRAND.gray200}`, borderRadius: 4, padding: "14px 16px", fontSize: 13, color: BRAND.text, lineHeight: 1.7, maxHeight: 300, overflowY: "auto", whiteSpace: "pre-wrap" } }, stripHtml(autoEmailDetail.body) || "(sem conteúdo)"))),
+        showSend && (React.createElement(Modal, { title: "Enviar E-mail", onClose: () => setShowSend(false), maxWidth: 640, isDraft: !!(sendData.body || sendData.subject || sendData.to), footer: React.createElement(React.Fragment, null,
+                React.createElement("button", { style: mkBtn("gray"), onClick: () => setShowSend(false) }, "Cancelar"),
+                React.createElement("button", { style: mkBtn("ghost"), onClick: () => { setDrafts(p => [...p.filter(d => d.id !== (sendData.id || 0)), { ...sendData, id: sendData.id || Date.now(), savedAt: new Date().toLocaleString("pt-BR") }]); setShowSend(false); } }, "\uD83D\uDCBE Salvar Rascunho"),
+                React.createElement("button", { style: mkBtn("outline"), onClick: doSendMailto }, "Abrir no Outlook"),
+                React.createElement("button", { style: { ...mkBtn("primary"), opacity: sending ? .5 : 1 }, onClick: doSendPA, disabled: sending }, sending ? "Enviando..." : "Enviar via Power Automate")) },
+            sendMsg && React.createElement("div", { style: { background: sendMsg.includes("Erro") ? "#fff0f0" : BRAND.greenMuted, border: `1px solid ${sendMsg.includes("Erro") ? "#fcc" : BRAND.greenBorder}`, borderRadius: 3, padding: "10px 14px", marginBottom: 14, fontSize: 13, color: sendMsg.includes("Erro") ? "#c0392b" : BRAND.green } }, sendMsg),
+            React.createElement("div", { style: { display: "flex", gap: 4, marginBottom: 18, border: `1px solid ${BRAND.gray200}`, borderRadius: 3, overflow: "hidden", width: "fit-content" } }, [{ id: "new", label: "Novo" }, { id: "forward", label: "Encaminhar" }, { id: "replyAll", label: "Responder a Todos" }].map(m => (React.createElement("button", { key: m.id, onClick: () => setSendData(p => ({ ...p, mode: m.id, subject: m.id === "forward" ? `Enc: ${p.subject}` : m.id === "replyAll" ? `Re: ${p.subject}` : p.subject })), style: { padding: "7px 16px", border: "none", borderRight: `1px solid ${BRAND.gray200}`, background: sendData.mode === m.id ? BRAND.black : BRAND.white, color: sendData.mode === m.id ? BRAND.white : BRAND.gray600, fontWeight: 600, fontSize: 12, cursor: "pointer", fontFamily: "inherit" } }, m.label)))),
+            React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 4 } },
+                React.createElement(FormField, { label: "Modelo" },
+                    React.createElement("select", { style: S.inp, value: sendData.templateId, onChange: e => applyTemplate(e.target.value) },
+                        React.createElement("option", { value: "" }, "Selecione um modelo"),
+                        templates.map(t => React.createElement("option", { key: t.id, value: t.id }, t.name)))),
+                React.createElement(FormField, { label: "Contato r\u00E1pido" },
+                    React.createElement("select", { style: S.inp, value: sendData.contactId, onChange: e => applyContact(e.target.value) },
+                        React.createElement("option", { value: "" }, "Selecione um contato"),
+                        contacts.map(ct => React.createElement("option", { key: ct.id, value: ct.id }, ct.name))))),
+            React.createElement("div", { style: { background: BRAND.gray50, borderRadius: 3, padding: 14, marginBottom: 14, border: `1px solid ${BRAND.gray200}` } },
+                React.createElement("div", { style: { fontSize: 11, fontWeight: 700, color: BRAND.gray400, marginBottom: 10, textTransform: "uppercase", letterSpacing: ".5px" } }, "Destinat\u00E1rios"),
+                React.createElement(FormField, { label: "Para" },
+                    React.createElement("input", { style: S.inp, value: sendData.to, onChange: e => setSendData(p => ({ ...p, to: e.target.value })), placeholder: "email@exemplo.com" })),
+                sendData.mode === "forward" && React.createElement(FormField, { label: "Encaminhar Para" },
+                    React.createElement("input", { style: S.inp, value: sendData.forwardTo || "", onChange: e => setSendData(p => ({ ...p, forwardTo: e.target.value })), placeholder: "encaminhar@exemplo.com" })),
+                React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 } },
+                    React.createElement(FormField, { label: "CC" },
+                        React.createElement("input", { style: S.inp, value: sendData.cc, onChange: e => setSendData(p => ({ ...p, cc: e.target.value })), placeholder: "cc@exemplo.com" })),
+                    React.createElement(FormField, { label: "BCC" },
+                        React.createElement("input", { style: S.inp, value: sendData.bcc, onChange: e => setSendData(p => ({ ...p, bcc: e.target.value })), placeholder: "bcc@exemplo.com" }))),
+                React.createElement(FormField, { label: "Reply-To" },
+                    React.createElement("input", { style: S.inp, value: sendData.replyTo, onChange: e => setSendData(p => ({ ...p, replyTo: e.target.value })), placeholder: "replyto@exemplo.com" }))),
+            React.createElement(FormField, { label: "Assunto" },
+                React.createElement("input", { style: S.inp, value: sendData.subject, onChange: e => setSendData(p => ({ ...p, subject: e.target.value })) })),
+            sendData.mode === "forward" && sendData.body && React.createElement("div", { style: { background: BRAND.gray50, borderRadius: 3, padding: "10px 14px", marginBottom: 12, fontSize: 12, color: BRAND.textMuted, borderLeft: `3px solid ${BRAND.green}` } },
+                React.createElement("div", { style: { fontWeight: 700, marginBottom: 4, color: BRAND.green, fontSize: 11, textTransform: "uppercase" } }, "Mensagem Original"),
+                React.createElement("pre", { style: { whiteSpace: "pre-wrap", fontFamily: "inherit", fontSize: 12 } }, sendData.body)),
+            React.createElement(FormField, { label: sendData.mode === "forward" ? "Mensagem adicional" : "Corpo" },
+                React.createElement("textarea", { style: { ...S.inp, resize: "vertical" }, value: sendData.mode === "forward" ? (sendData.forwardNote || "") : sendData.body, onChange: e => sendData.mode === "forward" ? setSendData(p => ({ ...p, forwardNote: e.target.value })) : setSendData(p => ({ ...p, body: e.target.value })), rows: 7 })),
+            React.createElement(FormField, { label: "Webhook Power Automate", hint: "Cole o URL do fluxo criado no Power Automate" },
+                React.createElement("input", { style: S.inp, value: paWebhook, onChange: e => setPaWebhook(e.target.value), placeholder: "https://prod.logic.azure.com/..." })))),
+        showTplModal && (React.createElement(Modal, { title: editTpl ? "Editar Modelo" : "Novo Modelo", onClose: () => setShowTplModal(false), maxWidth: 620, footer: React.createElement(React.Fragment, null,
+                React.createElement("button", { style: mkBtn("gray"), onClick: () => setShowTplModal(false) }, "Cancelar"),
+                React.createElement("button", { style: mkBtn("primary"), onClick: () => { if (!tplForm.name)
+                        return; const o = { id: (editTpl === null || editTpl === void 0 ? void 0 : editTpl.id) || Date.now(), ...tplForm }; setTemplates(p => editTpl ? p.map(t => t.id === editTpl.id ? o : t) : [...p, o]); setShowTplModal(false); } }, "Salvar")) },
+            React.createElement(FormField, { label: "Nome do Modelo" },
+                React.createElement("input", { style: S.inp, value: tplForm.name, onChange: e => setTplForm(p => ({ ...p, name: e.target.value })), placeholder: "Ex: Acuse de Recebimento" })),
+            React.createElement(FormField, { label: "Assunto" },
+                React.createElement("input", { style: S.inp, value: tplForm.subject, onChange: e => setTplForm(p => ({ ...p, subject: e.target.value })) })),
+            React.createElement("div", { style: { background: BRAND.gray50, borderRadius: 3, padding: 14, marginBottom: 14, border: `1px solid ${BRAND.gray200}` } },
+                React.createElement("div", { style: { fontSize: 11, fontWeight: 700, color: BRAND.gray400, marginBottom: 10, textTransform: "uppercase", letterSpacing: ".5px" } }, "Destinat\u00E1rios padr\u00E3o"),
+                React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 } },
+                    React.createElement(FormField, { label: "Para" },
+                        React.createElement("select", { style: S.inp, value: ((_b = tplForm.toContactIds) === null || _b === void 0 ? void 0 : _b[0]) || "", onChange: e => setTplForm(p => ({ ...p, toContactIds: e.target.value ? [Number(e.target.value)] : [] })) },
+                            React.createElement("option", { value: "" }, "Nenhum"),
+                            contacts.map(ct => React.createElement("option", { key: ct.id, value: ct.id }, ct.name)))),
+                    React.createElement(FormField, { label: "Grupo" },
+                        React.createElement("select", { style: S.inp, value: ((_c = tplForm.groupIds) === null || _c === void 0 ? void 0 : _c[0]) || "", onChange: e => setTplForm(p => ({ ...p, groupIds: e.target.value ? [Number(e.target.value)] : [] })) },
+                            React.createElement("option", { value: "" }, "Nenhum"),
+                            groups.map(g => React.createElement("option", { key: g.id, value: g.id }, g.name)))),
+                    React.createElement(FormField, { label: "CC" },
+                        React.createElement("select", { style: S.inp, value: ((_d = tplForm.ccContactIds) === null || _d === void 0 ? void 0 : _d[0]) || "", onChange: e => setTplForm(p => ({ ...p, ccContactIds: e.target.value ? [Number(e.target.value)] : [] })) },
+                            React.createElement("option", { value: "" }, "Nenhum"),
+                            contacts.map(ct => React.createElement("option", { key: ct.id, value: ct.id }, ct.name)))),
+                    React.createElement(FormField, { label: "BCC" },
+                        React.createElement("select", { style: S.inp, value: ((_e = tplForm.bccContactIds) === null || _e === void 0 ? void 0 : _e[0]) || "", onChange: e => setTplForm(p => ({ ...p, bccContactIds: e.target.value ? [Number(e.target.value)] : [] })) },
+                            React.createElement("option", { value: "" }, "Nenhum"),
+                            contacts.map(ct => React.createElement("option", { key: ct.id, value: ct.id }, ct.name))))),
+                React.createElement(FormField, { label: "Reply-To" },
+                    React.createElement("select", { style: S.inp, value: tplForm.replyToContactId || "", onChange: e => setTplForm(p => ({ ...p, replyToContactId: e.target.value })) },
+                        React.createElement("option", { value: "" }, "Nenhum"),
+                        contacts.map(ct => React.createElement("option", { key: ct.id, value: ct.id },
+                            ct.name,
+                            " \u2014 ",
+                            ct.email))))),
+            React.createElement(FormField, { label: "Corpo do E-mail" },
+                React.createElement("textarea", { style: { ...S.inp, resize: "vertical" }, value: tplForm.body, onChange: e => setTplForm(p => ({ ...p, body: e.target.value })), rows: 7 })))),
+        showGroupModal && (React.createElement(Modal, { title: editGroup ? "Editar Grupo" : "Novo Grupo", onClose: () => setShowGroupModal(false), maxWidth: 480, footer: React.createElement(React.Fragment, null,
+                React.createElement("button", { style: mkBtn("gray"), onClick: () => setShowGroupModal(false) }, "Cancelar"),
+                React.createElement("button", { style: mkBtn("primary"), onClick: () => { if (!gForm.name)
+                        return; const o = { id: (editGroup === null || editGroup === void 0 ? void 0 : editGroup.id) || Date.now(), name: gForm.name, contactIds: gForm.contactIds }; setGroups(p => editGroup ? p.map(g => g.id === editGroup.id ? o : g) : [...p, o]); setShowGroupModal(false); } }, "Salvar")) },
+            React.createElement(FormField, { label: "Nome do Grupo" },
+                React.createElement("input", { style: S.inp, value: gForm.name, onChange: e => setGForm(p => ({ ...p, name: e.target.value })), placeholder: "Ex: Time Jur\u00EDdico" })),
+            React.createElement(FormField, { label: "Contatos" },
+                React.createElement("div", { style: { border: `1px solid ${BRAND.gray200}`, borderRadius: 3 } }, contacts.map((ct, i) => (React.createElement("label", { key: ct.id, style: { display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", borderBottom: i < contacts.length - 1 ? `1px solid ${BRAND.gray100}` : "none", cursor: "pointer", background: gForm.contactIds.includes(ct.id) ? BRAND.greenMuted : BRAND.white } },
+                    React.createElement("input", { type: "checkbox", checked: gForm.contactIds.includes(ct.id), onChange: e => setGForm(p => ({ ...p, contactIds: e.target.checked ? [...p.contactIds, ct.id] : p.contactIds.filter(id => id !== ct.id) })), style: { accentColor: BRAND.green, width: 15, height: 15 } }),
+                    React.createElement("div", null,
+                        React.createElement("div", { style: { fontWeight: 600, fontSize: 13 } }, ct.name),
+                        React.createElement("div", { style: { fontSize: 12, color: BRAND.gray400 } }, ct.email))))))))),
+        showContactModal && (React.createElement(Modal, { title: editContact ? "Editar Contato" : "Novo Contato", onClose: () => setShowContactModal(false), maxWidth: 480, footer: React.createElement(React.Fragment, null,
+                React.createElement("button", { style: mkBtn("gray"), onClick: () => setShowContactModal(false) }, "Cancelar"),
+                React.createElement("button", { style: mkBtn("primary"), onClick: () => {
+                        if (!cForm.name || !cForm.email)
+                            return;
+                        const newId = (editContact === null || editContact === void 0 ? void 0 : editContact.id) || Date.now();
+                        setContacts(p => editContact ? p.map(ct => ct.id === editContact.id ? { id: newId, name: cForm.name, email: cForm.email, org: cForm.org, type: cForm.type } : ct) : [...p, { id: newId, name: cForm.name, email: cForm.email, org: cForm.org, type: cForm.type }]);
+                        setGroups(p => p.map(g => { const inForm = cForm.groupIds.includes(g.id); const has = g.contactIds.includes(newId); if (inForm && !has)
+                            return { ...g, contactIds: [...g.contactIds, newId] }; if (!inForm && has)
+                            return { ...g, contactIds: g.contactIds.filter(id => id !== newId) }; return g; }));
+                        setShowContactModal(false);
+                    } }, "Salvar")) },
+            React.createElement(FormField, { label: "Nome" },
+                React.createElement("input", { style: S.inp, value: cForm.name, onChange: e => setCForm(p => ({ ...p, name: e.target.value })) })),
+            React.createElement(FormField, { label: "E-mail" },
+                React.createElement("input", { style: S.inp, type: "email", value: cForm.email, onChange: e => setCForm(p => ({ ...p, email: e.target.value })) })),
+            React.createElement(FormField, { label: "Organiza\u00E7\u00E3o" },
+                React.createElement("input", { style: S.inp, value: cForm.org, onChange: e => setCForm(p => ({ ...p, org: e.target.value })), placeholder: "PROCON SP, OPPO Brasil..." })),
+            React.createElement(FormField, { label: "Tipo" },
+                React.createElement("input", { style: S.inp, value: cForm.type, onChange: e => setCForm(p => ({ ...p, type: e.target.value })), placeholder: "Jur\u00EDdico, \u00D3rg\u00E3o, Interno..." })),
+            groups.length > 0 && (React.createElement(FormField, { label: "Adicionar a grupos" },
+                React.createElement("div", { style: { border: `1px solid ${BRAND.gray200}`, borderRadius: 3 } }, groups.map((g, i) => (React.createElement("label", { key: g.id, style: { display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", borderBottom: i < groups.length - 1 ? `1px solid ${BRAND.gray100}` : "none", cursor: "pointer", background: cForm.groupIds.includes(g.id) ? BRAND.greenMuted : BRAND.white } },
+                    React.createElement("input", { type: "checkbox", checked: cForm.groupIds.includes(g.id), onChange: e => setCForm(p => ({ ...p, groupIds: e.target.checked ? [...p.groupIds, g.id] : p.groupIds.filter(id => id !== g.id) })), style: { accentColor: BRAND.green, width: 15, height: 15 } }),
+                    React.createElement("div", null,
+                        React.createElement("div", { style: { fontWeight: 600, fontSize: 13 } }, g.name),
+                        React.createElement("div", { style: { fontSize: 12, color: BRAND.gray400 } },
+                            g.contactIds.length,
+                            " membro(s)")))))))))),
+        selectedEmail && (React.createElement(Modal, { title: selectedEmail.subject, onClose: () => setSelectedEmail(null), maxWidth: 600, footer: React.createElement(React.Fragment, null,
+                React.createElement("button", { style: mkBtn("primary"), onClick: () => { openSend({ subject: `Re: ${selectedEmail.result.subject_summary}`, body: selectedEmail.result.suggested_reply || "", mode: "replyAll" }); setSelectedEmail(null); } }, "Responder"),
+                React.createElement("button", { style: mkBtn("outline"), onClick: () => { openSend({ subject: `Enc: ${selectedEmail.result.subject_summary}`, body: selectedEmail.result.suggested_reply || "", mode: "forward" }); setSelectedEmail(null); } }, "Encaminhar"),
+                React.createElement("button", { style: mkBtn("gray"), onClick: () => setSelectedEmail(null) }, "Fechar")) },
+            React.createElement("div", { style: { display: "flex", gap: 6, marginBottom: 14 } },
+                React.createElement("span", { style: mkTag(BRAND.gray100, BRAND.gray600) }, selectedEmail.category),
+                React.createElement("span", { style: mkTag(pBg(selectedEmail.priority), pColor(selectedEmail.priority)) }, selectedEmail.priority),
+                React.createElement("span", { style: { fontSize: 11, color: BRAND.gray400, marginLeft: "auto" } }, selectedEmail.savedAt)),
+            React.createElement("div", { style: { marginBottom: 12 } },
+                React.createElement("div", { style: { fontSize: 11, fontWeight: 700, color: BRAND.gray400, marginBottom: 5, textTransform: "uppercase", letterSpacing: ".5px" } }, "Resumo"),
+                React.createElement("div", { style: { background: BRAND.gray50, padding: "10px 14px", borderRadius: 3, fontSize: 13, borderLeft: `3px solid ${BRAND.green}` } }, selectedEmail.result.subject_summary)),
+            React.createElement("div", { style: { marginBottom: 12 } },
+                React.createElement("div", { style: { fontSize: 11, fontWeight: 700, color: BRAND.gray400, marginBottom: 5, textTransform: "uppercase", letterSpacing: ".5px" } }, "A\u00E7\u00E3o"),
+                React.createElement("div", { style: { background: "#fffbeb", border: "1px solid #fde68a", padding: "10px 14px", borderRadius: 3, fontSize: 13 } }, selectedEmail.result.action_required)),
+            selectedEmail.result.suggested_reply && React.createElement("div", null,
+                React.createElement("div", { style: { fontSize: 11, fontWeight: 700, color: BRAND.gray400, marginBottom: 5, textTransform: "uppercase", letterSpacing: ".5px" } }, "Resposta Sugerida"),
+                React.createElement("textarea", { readOnly: true, value: selectedEmail.result.suggested_reply, rows: 6, onFocus: e => e.target.select(), style: { ...S.inp, background: BRAND.gray50, resize: "vertical" } }))))));
+}
+// ===================== KANBAN =====================
+const COLS = [
+    { id: "pending", label: "Pendentes", emoji: "⏳", color: "#7c6b00", bg: "#fffbeb", headerBg: "#fef3c7", border: "#fde68a", pillBg: "#f59e0b", darkText: true },
+    { id: "urgent", label: "Urgentes", emoji: "🔴", color: "#991b1b", bg: "#fff5f5", headerBg: "#fee2e2", border: "#fca5a5", pillBg: "#ef4444", darkText: false },
+    { id: "done", label: "Concluídas", emoji: "✅", color: "#14532d", bg: "#f0fdf4", headerBg: "#dcfce7", border: "#86efac", pillBg: "#22c55e", darkText: false },
+];
+function Planner({ externalTask, onExternalTaskConsumed, onViewEmail }) {
+    const DEFAULT_TASKS = [
+        { id: 1, title: "Responder PROCON SP #1223301/2026", status: "urgent", due: "15/03/2026", case: "1223301/2026", notes: "Prazo final improrrogável" },
+        { id: 2, title: "Solicitar documentos da assistência técnica", status: "pending", due: "18/03/2026", case: "", notes: "" },
+        { id: 3, title: "Revisar resposta JEC Rio Claro", status: "done", due: "10/03/2026", case: "", notes: "Concluído" },
+        { id: 4, title: "Atualizar planilha de casos Q1", status: "pending", due: "20/03/2026", case: "", notes: "" },
+    ];
+    const [tasks, setTasks] = useState(DEFAULT_TASKS);
+    const [showModal, setShowModal] = useState(false);
+    const [editTask, setEditTask] = useState(null);
+    const [form, setForm] = useState({ title: "", status: "pending", due: "", case: "", notes: "" });
+    const [dragging, setDragging] = useState(null);
+    const [dragOver, setDragOver] = useState(null);
+    // Load tasks from Supabase on mount
+    useEffect(() => {
+        if (!dbReady())
+            return;
+        db.get("tasks").then(rows => {
+            if (rows && rows.length > 0) {
+                setTasks(rows.map(r => ({ id: r.id, title: r.title, status: r.status, due: r.due || "", case: r.case_ref || "", notes: r.notes || "" })));
+            }
+        });
+    }, []);
+    useEffect(() => {
+        if (externalTask) {
+            const newTask = { id: Date.now(), title: externalTask.title || "Nova tarefa", status: externalTask.priority === "High" ? "urgent" : "pending", due: "", case: "", notes: externalTask.notes || "" };
+            setTasks(p => [newTask, ...p]);
+            if (dbReady())
+                db.insert("tasks", { id: newTask.id, title: newTask.title, status: newTask.status, due: newTask.due, case_ref: newTask.case, notes: newTask.notes });
+            onExternalTaskConsumed();
+        }
+    }, [externalTask]);
+    const open = (t, defaultStatus) => { setEditTask(t); setForm(t ? { ...t } : { title: "", status: defaultStatus || "pending", due: "", case: "", notes: "" }); setShowModal(true); };
+    const save = () => {
+        if (!form.title)
+            return;
+        const o = { id: (editTask === null || editTask === void 0 ? void 0 : editTask.id) || Date.now(), ...form };
+        setTasks(p => editTask ? p.map(t => t.id === editTask.id ? o : t) : [o, ...p]);
+        if (dbReady()) {
+            if (editTask)
+                db.update("tasks", o.id, { title: o.title, status: o.status, due: o.due, case_ref: o.case, notes: o.notes });
+            else
+                db.insert("tasks", { id: o.id, title: o.title, status: o.status, due: o.due, case_ref: o.case, notes: o.notes });
+        }
+        setShowModal(false);
+    };
+    const total = tasks.length;
+    return (React.createElement("div", null,
+        React.createElement(SectionTitle, { title: "Planner de Tarefas", subtitle: "Arraste os cards entre colunas para mudar o status", action: React.createElement("button", { style: mkBtn("primary"), onClick: () => open(null) }, "+ Nova Tarefa") }),
+        React.createElement("div", { style: { display: "flex", gap: 12, marginBottom: 24 } }, COLS.map(col => {
+            const count = tasks.filter(t => t.status === col.id).length;
+            const pct = total > 0 ? Math.round((count / total) * 100) : 0;
+            return (React.createElement("div", { key: col.id, style: { flex: 1, background: col.headerBg, border: `1.5px solid ${col.border}`, borderRadius: 8, padding: "16px 20px" } },
+                React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start" } },
+                    React.createElement("div", null,
+                        React.createElement("div", { style: { fontSize: 12, fontWeight: 700, color: col.color, letterSpacing: ".5px", textTransform: "uppercase", marginBottom: 6 } },
+                            col.emoji,
+                            " ",
+                            col.label),
+                        React.createElement("div", { style: { fontSize: 42, fontWeight: 800, color: col.color, lineHeight: 1 } }, count),
+                        React.createElement("div", { style: { fontSize: 12, color: col.color, opacity: 0.7, marginTop: 4 } },
+                            pct,
+                            "% do total"))),
+                React.createElement("div", { style: { marginTop: 12, height: 6, background: "rgba(0,0,0,.08)", borderRadius: 99, overflow: "hidden" } },
+                    React.createElement("div", { style: { height: "100%", width: `${pct}%`, background: col.pillBg, borderRadius: 99, transition: "width .4s" } }))));
+        })),
+        React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16, alignItems: "start" } }, COLS.map(col => {
+            const colTasks = tasks.filter(t => t.status === col.id);
+            const isDragTarget = dragOver === col.id;
+            return (React.createElement("div", { key: col.id, onDragOver: e => { e.preventDefault(); setDragOver(col.id); }, onDrop: e => { e.preventDefault(); if (dragging) {
+                    setTasks(p => p.map(t => t.id === dragging.id ? { ...t, status: col.id } : t));
+                    if (dbReady())
+                        db.update("tasks", dragging.id, { status: col.id });
+                } setDragging(null); setDragOver(null); }, style: { borderRadius: 8, overflow: "hidden", border: `2px solid ${isDragTarget ? col.pillBg : col.border}`, transition: "all .2s", boxShadow: isDragTarget ? `0 0 0 3px ${col.pillBg}40` : "none" } },
+                React.createElement("div", { style: { background: col.headerBg, padding: "14px 16px", borderBottom: `1px solid ${col.border}`, display: "flex", justifyContent: "space-between", alignItems: "center" } },
+                    React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10 } },
+                        React.createElement("span", { style: { fontSize: 18 } }, col.emoji),
+                        React.createElement("span", { style: { fontWeight: 800, fontSize: 16, color: col.color, letterSpacing: "-.3px" } }, col.label),
+                        React.createElement("span", { style: { background: col.pillBg, color: "#fff", borderRadius: 20, padding: "2px 10px", fontSize: 13, fontWeight: 800, minWidth: 28, textAlign: "center" } }, colTasks.length)),
+                    React.createElement("button", { onClick: () => open(null, col.id), style: { background: col.pillBg, color: "#fff", border: "none", borderRadius: 6, width: 28, height: 28, fontSize: 18, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, lineHeight: 1 } }, "+")),
+                React.createElement("div", { style: { background: col.bg, padding: 10, minHeight: 200 } },
+                    colTasks.length === 0 && (React.createElement("div", { style: { textAlign: "center", padding: "32px 16px", color: col.color, opacity: 0.4, fontSize: 13, border: `2px dashed ${col.border}`, borderRadius: 6, margin: 4 } }, "Solte tarefas aqui")),
+                    colTasks.map(task => (React.createElement("div", { key: task.id, draggable: true, onDragStart: e => { setDragging(task); e.dataTransfer.effectAllowed = "move"; }, style: { background: "#fff", borderRadius: 6, padding: "14px 16px", marginBottom: 8, border: `1px solid ${col.border}`, borderLeft: `5px solid ${col.pillBg}`, cursor: "grab", boxShadow: (dragging === null || dragging === void 0 ? void 0 : dragging.id) === task.id ? "0 8px 24px rgba(0,0,0,.15)" : "0 2px 6px rgba(0,0,0,.06)", opacity: (dragging === null || dragging === void 0 ? void 0 : dragging.id) === task.id ? .4 : 1, transition: "box-shadow .15s" } },
+                        React.createElement("div", { style: { fontWeight: 700, fontSize: 15, color: BRAND.text, marginBottom: 8, lineHeight: 1.4 } }, task.title),
+                        React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", marginBottom: task.notes ? 8 : 0 } },
+                            task.due && (React.createElement("span", { style: { fontSize: 12, color: col.color, fontWeight: 600, background: col.headerBg, padding: "2px 8px", borderRadius: 4 } },
+                                "\uD83D\uDCC5 ",
+                                task.due)),
+                            task.case && (React.createElement("span", { style: { fontSize: 12, color: BRAND.green, fontWeight: 700, background: BRAND.greenMuted, padding: "2px 8px", borderRadius: 4 } },
+                                "#",
+                                task.case))),
+                        task.notes && (React.createElement("div", { style: { fontSize: 13, color: BRAND.gray600, marginBottom: 10, lineHeight: 1.5, background: col.bg, padding: "6px 10px", borderRadius: 4 } }, task.notes)),
+                        React.createElement("div", { style: { display: "flex", gap: 6, justifyContent: "flex-end", marginTop: 8, paddingTop: 8, borderTop: `1px solid ${col.border}` } },
+                            React.createElement("button", { style: mkBtn("gray", { padding: "5px 12px", fontSize: 12 }), onClick: () => open(task) }, "Editar"),
+                            React.createElement("button", { style: mkBtn("gray", { padding: "5px 10px", fontSize: 12, color: "#c0392b" }), onClick: () => setTasks(p => p.filter(x => x.id !== task.id)) }, "\u2715"))))))));
+        })),
+        showModal && (React.createElement(Modal, { title: editTask ? "Editar Tarefa" : "Nova Tarefa", onClose: () => setShowModal(false), maxWidth: 500, footer: React.createElement(React.Fragment, null,
+                React.createElement("button", { style: mkBtn("gray"), onClick: () => setShowModal(false) }, "Cancelar"),
+                React.createElement("button", { style: mkBtn("primary"), onClick: save }, "Salvar")) },
+            React.createElement(FormField, { label: "T\u00EDtulo" },
+                React.createElement("input", { style: S.inp, value: form.title, onChange: e => setForm(p => ({ ...p, title: e.target.value })), placeholder: "Descreva a tarefa..." })),
+            React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 } },
+                React.createElement(FormField, { label: "Status" },
+                    React.createElement("select", { style: S.inp, value: form.status, onChange: e => setForm(p => ({ ...p, status: e.target.value })) }, COLS.map(col => React.createElement("option", { key: col.id, value: col.id },
+                        col.emoji,
+                        " ",
+                        col.label)))),
+                React.createElement(FormField, { label: "Prazo" },
+                    React.createElement("input", { style: S.inp, value: form.due, onChange: e => setForm(p => ({ ...p, due: e.target.value })), placeholder: "DD/MM/AAAA" }))),
+            React.createElement(FormField, { label: "N\u00BA do Caso" },
+                React.createElement("input", { style: S.inp, value: form.case, onChange: e => setForm(p => ({ ...p, case: e.target.value })), placeholder: "1223301/2026" })),
+            React.createElement(FormField, { label: "Notas" },
+                React.createElement("textarea", { style: { ...S.inp, resize: "vertical" }, value: form.notes, onChange: e => setForm(p => ({ ...p, notes: e.target.value })), rows: 3 }))))));
+}
+// ===================== HISTORY =====================
+function History({ cases }) {
+    const [search, setSearch] = useState("");
+    const [selected, setSelected] = useState(null);
+    const [copied, setCopied] = useState(false);
+    const filtered = useMemo(() => { const q = search.toLowerCase(); if (!q)
+        return cases; return cases.filter(c => { const d = c.data || {}; return [c.caseNumber, c.counterparty, c.courtName, d.courtDistrict, d.objectOfComplaint, d.modelDevice, d.salesChannel, d.customersRequest, d.complaintDescription, d.dateOfPurchase, d.amountInvolved].some(v => (v || "").toLowerCase().includes(q)); }); }, [cases, search]);
+    const getV = (f, d) => { var _a; if (f.fixed !== null)
+        return f.fixed; return (_a = d === null || d === void 0 ? void 0 : d[f.key]) !== null && _a !== void 0 ? _a : ""; };
+    const tsv = d => FIELDS.map(f => getV(f, d)).join("\t");
+    const doCopy = d => { var _a; if ((_a = navigator.clipboard) === null || _a === void 0 ? void 0 : _a.writeText)
+        navigator.clipboard.writeText(tsv(d)).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000); }); };
+    const dl = (d, cn) => { const b = new Blob([FIELDS.map(f => f.label).join("\t") + "\n" + tsv(d)], { type: "text/tab-separated-values" }); const a = document.createElement("a"); a.href = URL.createObjectURL(b); a.download = `oppo_${cn}.tsv`; a.click(); };
+    if (selected)
+        return (React.createElement("div", null,
+            React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 } },
+                React.createElement("button", { style: mkBtn("outline"), onClick: () => setSelected(null) }, "\u2190 Voltar"),
+                React.createElement("div", { style: { display: "flex", gap: 8 } },
+                    React.createElement("button", { style: mkBtn("primary"), onClick: () => doCopy(selected.data) }, copied ? "Copiado!" : "Copiar"),
+                    React.createElement("button", { style: mkBtn("green"), onClick: () => dl(selected.data, selected.caseNumber) }, "Baixar .TSV"))),
+            React.createElement("div", { style: S.card },
+                React.createElement("div", { style: S.ch },
+                    React.createElement("span", { style: { fontWeight: 700, color: BRAND.text } },
+                        selected.caseNumber,
+                        " \u2014 ",
+                        selected.counterparty),
+                    React.createElement("span", { style: { fontSize: 12, color: BRAND.gray400 } }, selected.savedAt)),
+                FIELDS.map((field, i) => (React.createElement("div", { key: field.key, style: { display: "grid", gridTemplateColumns: "200px 1fr", borderBottom: i < FIELDS.length - 1 ? `1px solid ${BRAND.gray100}` : "none" } },
+                    React.createElement("div", { style: { padding: "8px 16px", fontSize: 12, fontWeight: 600, color: BRAND.gray600, background: BRAND.gray50, display: "flex", alignItems: "center", letterSpacing: ".2px" } }, field.label),
+                    React.createElement("div", { style: { padding: "8px 14px", fontSize: 13, color: BRAND.text } }, field.fixed === "" ? React.createElement("span", { style: { color: BRAND.gray400, fontStyle: "italic" } }, "\u2014") : getV(field, selected.data) || React.createElement("span", { style: { color: BRAND.gray400 } }, "\u2014"))))))));
+    return (React.createElement("div", null,
+        React.createElement(SectionTitle, { title: "Hist\u00F3rico de Casos", subtitle: `${cases.length} caso(s) registrado(s)`, action: React.createElement("div", { style: { position: "relative" } },
+                React.createElement("span", { style: { position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: BRAND.gray400, fontSize: 13 } }, "\u2315"),
+                React.createElement("input", { value: search, onChange: e => setSearch(e.target.value), placeholder: "Buscar por caso, nome, objeto...", style: { ...S.inp, width: 300, paddingLeft: 30, background: BRAND.white } })) }),
+        cases.length === 0
+            ? React.createElement("div", { style: S.card },
+                React.createElement("div", { style: { ...S.cb, textAlign: "center", padding: "48px", color: BRAND.gray400 } },
+                    React.createElement("div", { style: { fontWeight: 600, color: BRAND.gray600, fontSize: 15, marginBottom: 6 } }, "Nenhum caso salvo"),
+                    React.createElement("div", { style: { fontSize: 13 } }, "Extraia uma notifica\u00E7\u00E3o e clique em \"Salvar\"")))
+            : filtered.length === 0 ? React.createElement("div", { style: S.card },
+                React.createElement("div", { style: { ...S.cb, textAlign: "center", padding: "32px", color: BRAND.gray400, fontSize: 13 } },
+                    "Nenhum resultado para \"",
+                    search,
+                    "\""))
+                : React.createElement("div", { style: S.card },
+                    React.createElement("div", { style: { overflowX: "auto" } },
+                        React.createElement("table", { style: { width: "100%", borderCollapse: "collapse" } },
+                            React.createElement("thead", null,
+                                React.createElement("tr", { style: { background: BRAND.gray50 } }, ["Protocolo", "Contraparte", "Tribunal", "Distrito", "Objeto", "Resumo", "Pedido", "Salvo em", ""].map(h => React.createElement("th", { key: h, style: { padding: "9px 14px", textAlign: "left", fontSize: 11, fontWeight: 700, color: BRAND.gray400, borderBottom: `2px solid ${BRAND.gray200}`, whiteSpace: "nowrap", letterSpacing: ".4px", textTransform: "uppercase" } }, h)))),
+                            React.createElement("tbody", null, filtered.map(cas => {
+                                var _a, _b, _c, _d;
+                                return (React.createElement("tr", { key: cas.id, style: { cursor: "pointer" }, onClick: () => setSelected(cas), onMouseEnter: e => e.currentTarget.style.background = BRAND.gray50, onMouseLeave: e => e.currentTarget.style.background = "" },
+                                    React.createElement("td", { style: { padding: "10px 14px", fontWeight: 700, color: BRAND.green, fontSize: 13, whiteSpace: "nowrap" } }, cas.caseNumber),
+                                    React.createElement("td", { style: { padding: "10px 14px", fontSize: 13, color: BRAND.text } }, cas.counterparty),
+                                    React.createElement("td", { style: { padding: "10px 14px" } },
+                                        React.createElement("span", { style: mkTag(BRAND.gray100, BRAND.gray600) }, cas.courtName)),
+                                    React.createElement("td", { style: { padding: "10px 14px", fontSize: 12, color: BRAND.textMuted, whiteSpace: "nowrap" } }, ((_a = cas.data) === null || _a === void 0 ? void 0 : _a.courtDistrict) || "—"),
+                                    React.createElement("td", { style: { padding: "10px 14px", fontSize: 12, maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, ((_b = cas.data) === null || _b === void 0 ? void 0 : _b.objectOfComplaint) || "—"),
+                                    React.createElement("td", { style: { padding: "10px 14px", fontSize: 12, maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: BRAND.textMuted } }, ((_c = cas.data) === null || _c === void 0 ? void 0 : _c.complaintDescription) || "—"),
+                                    React.createElement("td", { style: { padding: "10px 14px", fontSize: 12, maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: BRAND.textMuted } }, ((_d = cas.data) === null || _d === void 0 ? void 0 : _d.customersRequest) || "—"),
+                                    React.createElement("td", { style: { padding: "10px 14px", fontSize: 11, color: BRAND.gray400, whiteSpace: "nowrap" } }, cas.savedAt),
+                                    React.createElement("td", { style: { padding: "10px 14px" }, onClick: e => e.stopPropagation() },
+                                        React.createElement("button", { style: mkBtn("green", { padding: "4px 10px", fontSize: 11 }), onClick: () => dl(cas.data, cas.caseNumber) }, "TSV"))));
+                            })))))));
+}
+// ===================== APP SHELL =====================
+function App() {
+    const [tab, setTab] = useState("extractor");
+    const [cases, setCases] = useState([]);
+    const [plannerTask, setPlannerTask] = useState(null);
+    const [viewInboxId, setViewInboxId] = useState(null);
+    const [dbStatus, setDbStatus] = useState("idle"); // idle | loading | ok | error | unconfigured
+    const [savedEmails, setSavedEmails] = useState([]);
+    // Load ALL data from Supabase on mount
+    useEffect(() => {
+        if (!dbReady()) {
+            setDbStatus("unconfigured");
+            return;
+        }
+        setDbStatus("loading");
+        Promise.all([db.get("cases"), db.get("emails")])
+            .then(([caseRows, emailRows]) => {
+            // Load cases
+            setCases((caseRows || []).map(r => ({
+                id: r.id, savedAt: r.saved_at, fileName: r.file_name,
+                caseNumber: r.case_number, counterparty: r.counterparty,
+                courtName: r.court_name, data: r.data
+            })));
+            // Load saved emails
+            setSavedEmails((emailRows || []).map(r => ({
+                id: r.id, savedAt: r.saved_at, subject: r.subject,
+                category: r.category, priority: r.priority, result: r.result
+            })));
+            setDbStatus("ok");
+        })
+            .catch(() => setDbStatus("error"));
+    }, []);
+    // Save a case to Supabase (called from Extractor)
+    const saveCase = useCallback(async (ca) => {
+        setCases(p => [ca, ...p]);
+        if (!dbReady())
+            return;
+        await db.insert("cases", {
+            id: ca.id, saved_at: ca.savedAt, file_name: ca.fileName,
+            case_number: ca.caseNumber, counterparty: ca.counterparty,
+            court_name: ca.courtName, data: ca.data
+        });
+    }, []);
+    // Save an email analysis to Supabase (called from EmailsHub)
+    const saveEmail = useCallback(async (em) => {
+        setSavedEmails(p => [em, ...p]);
+        if (!dbReady())
+            return;
+        await db.insert("emails", {
+            id: em.id, saved_at: em.savedAt, subject: em.subject,
+            category: em.category, priority: em.priority, result: em.result
+        });
+    }, []);
+    const NAV = [
+        { id: "extractor", label: "Extrator" },
+        { id: "emails", label: "E-mails" },
+        { id: "planner", label: "Planner" },
+        { id: "history", label: "Histórico", badge: cases.length },
+    ];
+    const addToPlanner = useCallback(task => { setPlannerTask(task); setTab("planner"); }, []);
+    const DbBanner = () => {
+        if (dbStatus === "unconfigured")
+            return (React.createElement("div", { style: { background: "#fffbeb", borderBottom: "1px solid #fde68a", padding: "8px 28px", fontSize: 12, color: "#92400e", display: "flex", alignItems: "center", gap: 8 } },
+                React.createElement("span", null, "\u26A0\uFE0F"),
+                React.createElement("span", null,
+                    React.createElement("strong", null, "Modo local"),
+                    " \u2014 dados n\u00E3o persistem. Configure o Supabase no c\u00F3digo para salvar permanentemente.")));
+        if (dbStatus === "error")
+            return (React.createElement("div", { style: { background: "#fef2f2", borderBottom: "1px solid #fca5a5", padding: "8px 28px", fontSize: 12, color: "#991b1b", display: "flex", alignItems: "center", gap: 8 } },
+                React.createElement("span", null, "\u274C"),
+                React.createElement("span", null, "Erro ao conectar com Supabase. Verifique URL e chave.")));
+        if (dbStatus === "loading")
+            return (React.createElement("div", { style: { background: "#eff6ff", borderBottom: "1px solid #bfdbfe", padding: "8px 28px", fontSize: 12, color: "#1e40af", display: "flex", alignItems: "center", gap: 8 } },
+                React.createElement("span", null, "\uD83D\uDD04"),
+                React.createElement("span", null, "Conectando ao banco de dados...")));
+        if (dbStatus === "ok")
+            return (React.createElement("div", { style: { background: "#f0fdf4", borderBottom: "1px solid #86efac", padding: "8px 28px", fontSize: 12, color: "#14532d", display: "flex", alignItems: "center", gap: 8 } },
+                React.createElement("span", null, "\u2705"),
+                React.createElement("span", null,
+                    React.createElement("strong", null, "Supabase conectado"),
+                    " \u2014 dados salvos na nuvem.")));
+        return null;
+    };
+    return (React.createElement("div", { style: { display: "flex", height: "100vh", overflow: "hidden", fontFamily: "'Inter','Segoe UI','Helvetica Neue',sans-serif" } },
+        React.createElement("div", { style: S.sidebar },
+            React.createElement("div", { style: { padding: "22px 20px 16px", borderBottom: `1px solid rgba(255,255,255,.08)` } },
+                React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 0 } },
+                    React.createElement(OPPOLogo, { size: 22, white: true })),
+                React.createElement("div", { style: { marginTop: 6, fontSize: 11, color: "rgba(255,255,255,.35)", letterSpacing: ".8px", textTransform: "uppercase" } }, "Legal Hub")),
+            React.createElement("div", { style: { padding: "12px 0", flex: 1 } },
+                React.createElement("div", { style: { padding: "6px 20px 6px", fontSize: 10, fontWeight: 700, color: "rgba(255,255,255,.25)", letterSpacing: "1.2px", textTransform: "uppercase" } }, "Menu"),
+                NAV.map(n => (React.createElement("button", { key: n.id, onClick: () => setTab(n.id), style: { display: "flex", alignItems: "center", gap: 10, padding: "11px 20px", cursor: "pointer", color: tab === n.id ? BRAND.white : "rgba(255,255,255,.45)", fontSize: 13, fontWeight: tab === n.id ? 700 : 400, border: "none", background: tab === n.id ? BRAND.green : "transparent", width: "100%", textAlign: "left", fontFamily: "inherit", letterSpacing: ".2px", borderLeft: tab === n.id ? `3px solid ${BRAND.greenLight}` : "3px solid transparent" } },
+                    React.createElement("span", { style: { flex: 1 } }, n.label),
+                    n.badge > 0 && React.createElement("span", { style: { background: BRAND.green, color: BRAND.white, borderRadius: 10, padding: "1px 7px", fontSize: 10, fontWeight: 700 } }, n.badge))))),
+            React.createElement("div", { style: { padding: "14px 20px", borderTop: "1px solid rgba(255,255,255,.06)" } },
+                React.createElement("div", { style: { fontSize: 11, color: "rgba(255,255,255,.25)", letterSpacing: ".3px" } }, "OPPO Brasil \u00B7 Jur\u00EDdico"),
+                React.createElement("div", { style: { fontSize: 10, color: "rgba(255,255,255,.15)", marginTop: 2 } }, new Date().toLocaleDateString("pt-BR")))),
+        React.createElement("div", { style: S.main },
+            React.createElement("div", { style: S.topbar },
+                React.createElement("div", { style: { position: "relative", flex: 1, maxWidth: 360 } },
+                    React.createElement("span", { style: { position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: BRAND.gray400, fontSize: 14 } }, "\u2315"),
+                    React.createElement("input", { placeholder: "Buscar...", style: { ...S.inp, paddingLeft: 32, background: BRAND.gray50, border: `1px solid ${BRAND.gray200}`, color: BRAND.text } })),
+                React.createElement("div", { style: { marginLeft: "auto", display: "flex", alignItems: "center", gap: 12 } },
+                    React.createElement("span", { style: { fontSize: 12, color: BRAND.gray400 } }, "Jur\u00EDdico"),
+                    React.createElement("div", { style: { width: 32, height: 32, background: BRAND.black, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center" } },
+                        React.createElement(OPPOLogo, { size: 8, white: true })))),
+            React.createElement(DbBanner, null),
+            React.createElement("div", { style: S.content },
+                tab === "extractor" && React.createElement(Extractor, { onSave: saveCase }),
+                tab === "emails" && React.createElement(EmailsHub, { onAddToPlanner: addToPlanner, savedEmails: savedEmails, onSaveEmail: saveEmail, openInboxId: viewInboxId, onClearOpenInbox: () => setViewInboxId(null) }),
+                tab === "planner" && React.createElement(Planner, { externalTask: plannerTask, onExternalTaskConsumed: () => setPlannerTask(null), onViewEmail: (inboxId) => { setViewInboxId(inboxId); setTab("emails"); } }),
+                tab === "history" && React.createElement(History, { cases: cases })))));
+}
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(React.createElement(App));
+</script>
+</body>
+</html>
